@@ -133,27 +133,54 @@ function inWorkHours(range, ms = Date.now(), tz = 'beijing') {
 }
 
 
-/** 把 B站 动态 item 归一成 {id,type,publishedAt,text,images,author} */
+/** 把 B站 动态 item 归一成 {id,type,publishedAt,text,images,author,forward}；转发动态会合并 orig 原文 */
 function mapDynamicItem(it) {
   const o = it && typeof it === 'object' ? it : {}
-  const md = o.modules?.module_dynamic || {}
-  const au = o.modules?.module_author || {}
-  const text = String(md.desc?.text || md.major?.opus?.summary?.text || '').trim()
-  const picList = md.major?.draw?.items || md.major?.opus?.pics || []
-  const images = picList
-    .map((x) => ({ url: String(x?.src || x?.url || ''), width: Number(x?.width) || 0, height: Number(x?.height) || 0 }))
-    .filter((x) => x.url)
-  const pubSec = Number(au.pub_ts)
-  const pubMs = Number.isFinite(pubSec) && pubSec > 0 ? pubSec * 1000 : Date.parse(String(au.pub_time || '')) || 0
+  const readSide = (side) => {
+    const md = side?.modules?.module_dynamic || {}
+    const au = side?.modules?.module_author || {}
+    const text = String(md.desc?.text || md.major?.opus?.summary?.text || '').trim()
+    const picList = md.major?.draw?.items || md.major?.opus?.pics || []
+    const images = picList
+      .map((x) => ({ url: String(x?.src || x?.url || ''), width: Number(x?.width) || 0, height: Number(x?.height) || 0 }))
+      .filter((x) => x.url)
+    let card = ''
+    try {
+      const rawCard = md.major?.live_rcmd?.content
+      if (rawCard) card = typeof rawCard === 'string' ? rawCard : JSON.stringify(rawCard)
+    } catch { /* 卡片坏了不影响 */ }
+    return {
+      text,
+      images,
+      author: { mid: String(au.mid || ''), name: String(au.name || '') },
+      card: String(card || '').slice(0, 1200),
+    }
+  }
+  const own = readSide(o)
+  const orig = o.orig ? readSide(o.orig) : null
+  const ownPubSec = Number(o.modules?.module_author?.pub_ts)
+  const pubMs = Number.isFinite(ownPubSec) && ownPubSec > 0
+    ? ownPubSec * 1000
+    : Date.parse(String(o.modules?.module_author?.pub_time || '')) || 0
+  const parts = []
+  if (own.text && own.text !== '转发动态') parts.push(own.text)
+  if (orig) {
+    const head = `【转发自 ${orig.author.name || '未知主播'}】`
+    if (orig.text) parts.push(head + orig.text)
+    if (orig.card) parts.push(`${head}【预约/直播卡片】${orig.card}`)
+  }
+  const images = [...(own.images || []), ...((orig && orig.images) || [])]
   return {
     id: String(o.id_str || o.id || ''),
     type: String(o.type || ''),
     publishedAt: pubMs,
-    text,
+    text: (parts.join('\n') || own.text || '').trim(),
     images,
-    author: { mid: String(au.mid || ''), name: String(au.name || '') },
+    author: own.author,
+    forward: orig ? { author: orig.author, text: orig.text, card: orig.card } : null,
   }
 }
+
 
 /** 把 B站 预约记录归一成 {mid, roomId, name, title, at(ISO)}；字段名做多版本兼容 */
 function mapReserveItem(it) {
@@ -752,13 +779,16 @@ export function apply(ctx) {
   rt.dynamicsCache = []
 
   /** 用 LLM（deepseek-flash + max 推理）从动态文本里抽取直播预约 */
-  async function parseDynamicsWithLlm({ text = '', streamers = [] } = {}) {
+  async function parseDynamicsWithLlm({ text = '', streamers = [], meta = null } = {}) {
     if (!llm.available) return []
     const nowBj = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
     const roster = (streamers || []).map((x) => `${x.name}（UID ${x.mid}）`).join('、') || '（未配置主播）'
+    const pubBj = meta?.publishedAt ? new Date(meta.publishedAt + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') : ''
     const prompt = [
       '你要从一条 B站 个人动态里找出「直播预约 / 直播预告」信息。',
       `当前北京时间：${nowBj}（UTC+8）。`,
+      pubBj ? `这条动态的发布时间：${pubBj}（北京时间）。` : '',
+      meta?.forwardAuthor ? `这是一条转发动态，原动态作者：${meta.forwardAuthor}。` : '',
       `我的主播名单（名字→UID）：${roster}`,
       '',
       '动态内容（方括号之间）：',
@@ -772,7 +802,7 @@ export function apply(ctx) {
       '1) 只提取明确是「预约/预告/某日某点开播」的直播信息；没有就输出 []；',
       '2) 只有日期没年份时用最近的未来日期；出现「今天/明天/今晚8点」这类相对时间时，按上面的当前北京时间换算；',
       '3) at 必须是北京时间（+08:00），不要输出 UTC；无法确定具体时间就跳过这条；',
-      '4) name 原样取自动态，不要编造；',
+      '4) name 原样取自动态，不要编造；如果动态是转发、正文没写主播名，就用「原动态作者」作为 name；',
       '5) 严格输出 JSON 数组。',
     ].join('\n')
     const raw = await llm.generate({
@@ -1127,9 +1157,15 @@ export function apply(ctx) {
       let text = String(body.text || '').trim()
       let images = []
       let sourceId = ''
+      let meta = null
       if (body.id) {
         const it = (rt.dynamicsCache || []).find((x) => String(x.id) === String(body.id))
-        if (it) { text = it.text; images = it.images || []; sourceId = it.id }
+        if (it) {
+          text = it.text
+          images = it.images || []
+          sourceId = it.id
+          meta = { publishedAt: it.publishedAt, author: it.author?.name || '', forwardAuthor: it.forward?.author?.name || '' }
+        }
       }
       if (!text) {
         return sendJson(res, 200, {
@@ -1139,7 +1175,7 @@ export function apply(ctx) {
       }
       if (!llm.available) return sendJson(res, 200, { ok: false, error: '宿主没有提供 llm 服务' })
       const t0 = Date.now()
-      const items = await parseDynamicsWithLlm({ text, streamers: cfg.streamers })
+      const items = await parseDynamicsWithLlm({ text, streamers: cfg.streamers, meta })
       log(`动态识别：${items.length} 条预约（${Date.now() - t0}ms）`)
       return sendJson(res, 200, {
         ok: true,
