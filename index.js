@@ -92,16 +92,40 @@ function beijingClock(ms = Date.now()) {
   return `${hh}:${mm}`
 }
 
-/** "08:00-24:00" → 当前是否在工作时间段（北京时间，左闭右开；24:00 视为 1440） */
-function inWorkHours(range, ms = Date.now()) {
+/**
+ * 某时区当前是当天的第几分钟。
+ *   beijing      固定 UTC+8（默认，不受宿主机时区影响）
+ *   local        宿主机本地时区（容器里通常是 UTC）
+ *   <IANA 名称>  如 Europe/Berlin；用 Intl 计算，自动处理夏令时
+ */
+function minuteOfDayInZone(ms, tz) {
+  if (tz === 'beijing') {
+    const b = new Date(ms + 8 * 3600 * 1000)
+    return b.getUTCHours() * 60 + b.getUTCMinutes()
+  }
+  if (tz && tz !== 'local') {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+      }).formatToParts(new Date(ms))
+      const h = Number(parts.find((p) => p.type === 'hour')?.value)
+      const mi = Number(parts.find((p) => p.type === 'minute')?.value)
+      if (Number.isFinite(h) && Number.isFinite(mi)) return h * 60 + mi
+    } catch { /* 时区名不合法就退回宿主本地 */ }
+  }
+  const d = new Date(ms)
+  return d.getHours() * 60 + d.getMinutes()
+}
+
+/** "08:00-24:00" → 当前是否在工作时间段（左闭右开；24:00 视为 1440）。tz: beijing / local / IANA 时区名 */
+function inWorkHours(range, ms = Date.now(), tz = 'beijing') {
   const m = String(range || '').match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/)
   if (!m) return true
   const toMin = (h, mi) => Math.min(24 * 60, Number(h) * 60 + Number(mi))
   let start = toMin(m[1], m[2])
   let end = toMin(m[3], m[4])
   if (end <= start) end += 24 * 60
-  const b = new Date(ms + 8 * 3600 * 1000)
-  let cur = b.getUTCHours() * 60 + b.getUTCMinutes()
+  let cur = minuteOfDayInZone(ms, tz)
   if (cur < start) cur += 24 * 60
   return cur >= start && cur < end
 }
@@ -737,7 +761,7 @@ export function apply(ctx) {
     // 只有「即将进入窗口」的手动计划才让自动模式让路；远期计划不影响自动值守
     const soon = pendingPlans().some((p) => Date.parse(p.at) - PLAN_PRE_MS <= Date.now() + 5 * 60_000)
     if (soon) return
-    if (!inWorkHours(cfg.workHours)) return
+    if (!inWorkHours(cfg.workHours, Date.now(), cfg.workHoursTz)) return
     const pick = enabledStreamers().find((s) => isLive(s.mid))
     if (!pick) return
     const live = liveOf(pick.mid)
@@ -808,7 +832,7 @@ export function apply(ctx) {
       if (now - rt.lastSweepAt > TASK_SWEEP_MS) {
         rt.lastSweepAt = now
         // 自动巡视只在工作时间做；手动计划/主看房自己的任务不受影响
-        if (inWorkHours(cfg.workHours)) void sweepTasks().catch(() => {})
+        if (inWorkHours(cfg.workHours, now, cfg.workHoursTz)) void sweepTasks().catch(() => {})
       }
     } catch (e) {
       logErr(`心跳异常：${String(e?.message || e)}`)
@@ -862,7 +886,8 @@ export function apply(ctx) {
         streamers: tasks,
         mode: {
           auto: cfg.autoEnabled !== false,
-          inWorkHours: inWorkHours(cfg.workHours),
+          inWorkHours: inWorkHours(cfg.workHours, Date.now(), cfg.workHoursTz),
+          workHoursTz: cfg.workHoursTz || 'beijing',
           nextCheckAt: rt.nextAutoCheckAt || 0,
           workHours: cfg.workHours,
         },

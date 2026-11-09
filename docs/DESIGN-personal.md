@@ -203,7 +203,8 @@
 | | `streamers[]` | [] | `{mid, roomId, name, enabled, order}`，上限 5（顺序=优先级） |
 | 模式 | `autoEnabled` | true | 自动监控开关 |
 | | `autoCheckMs` | 900000 | 15 分钟 |
-| | `workHours` | "08:00-24:00" | 北京时间；自动模式生效 |
+| | `workHours` | "08:00-24:00" | 自动模式生效；语义由 workHoursTz 决定 |
+| | `workHoursTz` | "beijing" | beijing=UTC+8（默认）/ local=宿主本地 / IANA 名（如 Europe/Berlin，设置页选本机本地时间时记录浏览器时区） |
 | | `plans[]` | [] | 手动计划（一次性，`{mid,name,at,createdAt}`） |
 | 任务 | `taskWatch` | true | 观看任务开关（拉流层） |
 | | `taskDanmaku` | true | 弹幕任务开关 |

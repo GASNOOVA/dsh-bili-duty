@@ -120,7 +120,7 @@ select[data-bd-input]{cursor:pointer;}
        这里只在后端没返回某字段时兜底；真正的合法范围由服务端 normalizeConfig 再 clamp 一次。 */
     const DEFAULT_GREETINGS = ['来了来了', '主播晚上好', '今天也在播呢', '蹲到啦', '前排听歌', '来了，蹲一会儿', '今天状态不错', '好久不见', '加油呀', '打卡打卡']
     const DEFAULT_UI = {
-      autoCheckMin: '15', workHours: '08:00-24:00', greetingCount: '10', greetingSpacingSec: '30',
+      autoCheckMin: '15', workHours: '08:00-24:00', workHoursTz: 'beijing', greetingCount: '10', greetingSpacingSec: '30',
       aiIntervalSec: '300', aiDailyMax: '100', danmakuDailyMax: '150', danmakuCooldownSec: '3',
       aiMode: 'follow', aiFollowWindowSec: '60', aiFollowMinCount: '3',
       maxLen: '20', likeClicks: '300', likeRoundMin: '10', giftDailyMax: '5', watchQn: '150',
@@ -135,6 +135,7 @@ select[data-bd-input]{cursor:pointer;}
     const GIFT_LABEL = { done: '打赏完成 ✓', skipped_balance: '打赏跳过（余额不足）', disabled: '打赏未开启', failed: '打赏失败' }
 
     const pad2 = (n) => String(n).padStart(2, '0')
+    const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local' } catch { return 'local' } }
     const clampInt = (v, min, max, dflt) => {
       const n = Number(v)
       return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt
@@ -182,6 +183,7 @@ select[data-bd-input]{cursor:pointer;}
         aiDanmaku: c.aiDanmaku !== false,
         autoCheckMin: String(Math.round((Number(c.autoCheckMs) || 900000) / 60000)),
         workHours: String(c.workHours || DEFAULT_UI.workHours),
+        workHoursTz: c.workHoursTz === 'beijing' ? 'beijing' : 'local',
         greetingCount: String(c.templateGreetingCount ?? DEFAULT_UI.greetingCount),
         greetingSpacingSec: String(Math.round((Number(c.templateSpacingMs) || 30000) / 1000)),
         greetingText: (Array.isArray(c.greetingTemplates) ? c.greetingTemplates : DEFAULT_GREETINGS).join('\n'),
@@ -205,6 +207,7 @@ select[data-bd-input]{cursor:pointer;}
       autoEnabled: !!f.autoEnabled,
       autoCheckMs: clampInt(Number(f.autoCheckMin) * 60000, 60000, 3600000, 900000),
       workHours: String(f.workHours || '').trim() || DEFAULT_UI.workHours,
+      workHoursTz: f.workHoursTz === 'beijing' ? 'beijing' : browserTz(),
       taskWatch: !!f.taskWatch,
       taskDanmaku: !!f.taskDanmaku,
       taskLike: !!f.taskLike,
@@ -645,9 +648,17 @@ select[data-bd-input]{cursor:pointer;}
             note: '范围 1–60 分钟，默认 15 分钟',
           }),
           h(TextField, {
-            label: '工作时间（北京时间）', value: form.workHours, placeholder: '08:00-24:00',
+            label: '工作时间（' + (form.workHoursTz === 'local' ? '本机本地时间' : '北京时间') + '）', value: form.workHours, placeholder: '08:00-24:00',
             onChange: (v) => setForm((f) => ({ ...f, workHours: v })),
             note: '格式如 08:00-24:00；仅自动模式生效，手动计划不受限',
+          }),
+          h(SelectField, {
+            label: '工作时间时区', value: form.workHoursTz,
+            onChange: (v) => setForm((f) => ({ ...f, workHoursTz: v })),
+            options: optionPairs([['beijing', '北京时间（UTC+8，默认）'], ['local', '本机本地时间（浏览器时区）']]),
+            note: form.workHoursTz === 'local'
+              ? '按浏览器所在时区解释上面的工作时间；保存时会记录具体时区（' + browserTz() + '），自动处理夏令时'
+              : '按北京时间解释上面的工作时间；手动计划用绝对时间，不受影响',
           })),
         h(Sub, null, '手动计划（一次性）'),
         h(Note, null, '填主播和计划开播时间：插件会提前 10 分钟进房；到点仍未开播最多再等 10 分钟；触发一次后结束。自动模式关掉也照常执行。'),
