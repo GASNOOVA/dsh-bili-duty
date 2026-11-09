@@ -515,8 +515,8 @@ export function apply(ctx) {
       ].join('\n')
       const raw = await llm.generate({
         prompt,
-        // 思考模型会先花 reasoning token，预算给足；实际输出仍会被 maxLen 截断。
-        maxTokens: 1200,
+        // 思考模型会先花 reasoning token；低推理强度下 1000 足够，实际输出仍被 maxLen 截断。
+        maxTokens: 1000,
         timeoutMs: 30000,
         onError: (e) => log(`跟风弹幕没接上模型：${String(e?.message || e)}`),
       })
@@ -546,9 +546,9 @@ export function apply(ctx) {
     ].filter(Boolean).join('\n')
     const text = await llm.generate({
       prompt,
-      // 思考模型会先花 reasoning token：120 这种小额度会被吃光、返回空串（旧插件踩过）。
-      // 弹幕本身只有 ≤20 字，但预算要给足到 1200，实际输出仍然被 maxLen 截断。
-      maxTokens: 1200,
+      // 思考模型会先花 reasoning token：小额度会被吃光、返回空串（旧插件踩过）。
+      // 弹幕本身只有 ≤20 字，预算给到 1000；实际输出仍然被 maxLen 截断。
+      maxTokens: 1000,
       timeoutMs: 30000,
       onError: (e) => log(`AI 弹幕没接上模型：${String(e?.message || e)}`),
     })

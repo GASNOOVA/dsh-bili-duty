@@ -838,7 +838,7 @@ select[data-bd-input]{cursor:pointer;}
         h('pre', { 'data-bd-log': '' }, (st.logs || []).join('\n') || '（还没有日志）'),
         h(Note, null, '家目录：' + (st.home || '—')),
         h(Note, null, '模型：' + (llm.available
-          ? `${llm.provider || '?'} / ${llm.model || '?'}`
+          ? `${llm.provider || '?'} / ${llm.model || '?'} / 推理 ${llm.reasoningEffort || '默认'}`
           : '宿主没有提供 llm 服务，AI 弹幕会静默跳过（问候模板仍会完成每日弹幕任务）')))
     }
 

@@ -117,6 +117,8 @@
 
 **B1. 跟风复读（默认，2026-11-09 新增）**：从最近弹幕里取时间窗口（`aiFollowWindowMs`，默认 60s）内的文本，先本地计数得到候选（同句出现 ≥ `aiFollowMinCount`，默认 3 次），再让 LLM 在候选里挑「正在被刷屏」的那一句原样复制。模型返回必须在候选里（防瞎编），否则回落本地第一名；窗口内没有明显刷屏则不发送。排除自己的弹幕、@、链接、加群/抽奖等广告；本地计数可独立兜底（LLM 不可用也能工作）。参数：`aiDanmakuMode`（follow/generate）、`aiFollowWindowMs`（20–300s）、`aiFollowMinCount`（2–20）。本地用 mock ctx + mock LLM 验证过三种情况：LLM 选对、LLM 乱填回落、没刷屏不发。
 
+**模型与成本（2026-11-09 调整）**：AI 弹幕固定走 `deepseek-official / deepseek-flash / reasoningEffort=low`（配置项 `llmProvider` / `llmModel` / `llmReasoningEffort`，effort 取值 off/low/high/max），单次 `maxTokens: 1000`。之前跟随宿主默认模型时会继承 `reasoningEffort: max`，对「跟着刷一句」这种低难度任务浪费大量 reasoning token；改为 low 后在同样输出质量下显著降低消耗。状态接口 `llm` 字段会返回 `reasoningEffort`，设置页调试区展示当前路由。
+
 **B2. 自由生成（可选）**：
 - 上下文：房间标题、主播名、最近 30 条弹幕（去重/截断）、当前时间；**不启用 ASR/画面**（保持轻量；若以后要「听到内容」，再评估）。
 - prompt 约束：≤20 字、像观众随口搭腔、不 @ 人、不引战、不刷屏、不重复历史发言、不提 AI/机器人。

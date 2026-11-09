@@ -55,6 +55,7 @@ dsh plugin --profile web add github:你的用户名/dsh-bili-duty
 - 模型返回的内容必须在候选里（防止瞎编）；不在候选里就回落到本地计数第一名；窗口内没有明显刷屏则不发送。
 - 会排除自己的弹幕、@、链接、加群/抽奖等广告文本；跟风模式不依赖 LLM 也能工作（纯本地计数兜底）。
 - 参数在「设置 → 直播值守 → 任务设置」里调：模式（跟风复读/自由生成）、跟风窗口秒数、最少重复次数、AI 间隔、每房每日上限。
+- **成本**：AI 弹幕默认走 `deepseek-official / deepseek-flash / 推理强度 low`（单次调用输出上限 1000 token），并只在候选统计里挑一句，尽量压低 token 消耗；可在 `~/.dsh/bili-duty/config.json` 里改 `llmProvider` / `llmModel` / `llmReasoningEffort`（off/low/high/max），设置页「调试」区会显示当前实际路由。
 
 ## 每日任务口径（P0 实测）
 
