@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+
+# 本机配置、登录态与运行产物（含 SESSDATA，绝不能提交）
+config.json
+credential.json
+state.json
+pushed.json
+logged-out.json
+live.log
+*.log
+recaps/
+tmp/
+
+# P0 探针的本地凭证与输出
+.probe/
+
+# 编辑器 / 系统垃圾
+.DS_Store
+Thumbs.db
+*.bak
+*.bak-*
