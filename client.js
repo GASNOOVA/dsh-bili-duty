@@ -668,6 +668,56 @@ select[data-bd-input]{cursor:pointer;}
           setResMsg({ tone: 'warn', text: '导入失败：' + errText(e) })
         } finally { setResLoading(false) }
       }
+      /* ── 个人动态 → AI 识别 → 导入计划 ── */
+      const [dyns, setDyns] = React.useState(null)
+      const [dynLoading, setDynLoading] = React.useState('')
+      const [dynMsg, setDynMsg] = React.useState(null)
+      const [parsed, setParsed] = React.useState(null)
+      const [parsedPicked, setParsedPicked] = React.useState({})
+      const parsedKey = (r) => String(r.mid || r.name) + '|' + String(r.at || '')
+      const loadDynamics = async () => {
+        setDynLoading('list'); setDynMsg(null); setParsed(null)
+        try {
+          const d = await jget('/dynamics')
+          if (!d || d.ok === false) throw new Error((d && d.error) || '读取失败')
+          setDyns(Array.isArray(d.items) ? d.items : [])
+          setDynMsg({ tone: 'good', text: `读到 ${(d.items || []).length} 条动态${(d.items || []).length ? '，点某条右边的「AI 识别预约」' : '（空间里暂时没有动态）'}` })
+        } catch (e) {
+          setDyns(null)
+          setDynMsg({ tone: 'warn', text: '读取动态失败：' + errText(e) })
+        } finally { setDynLoading('') }
+      }
+      const parseDyn = async (id) => {
+        setDynLoading('parse'); setDynMsg(null); setParsed(null)
+        try {
+          const r = await jpost('/dynamics/parse', { id })
+          if (!r || r.ok === false) throw new Error((r && r.error) || '识别失败')
+          const items = Array.isArray(r.items) ? r.items : []
+          setParsed(items)
+          const init = {}
+          for (const it of items) if (it.mid && it.at) init[parsedKey(it)] = true
+          setParsedPicked(init)
+          setDynMsg({ tone: items.length ? 'good' : 'warn', text: items.length
+            ? `识别出 ${items.length} 条预约` + (items.some((x) => !x.matched || !x.mid) ? '（有未匹配到主播名单的项，导入时会跳过）' : '')
+            : '这条动态里没有识别出明确的直播预约（或模型输出为空）' })
+        } catch (e) {
+          setDynMsg({ tone: 'warn', text: 'AI 识别失败：' + errText(e) })
+        } finally { setDynLoading('') }
+      }
+      const importParsed = async () => {
+        const items = (parsed || []).filter((r) => parsedPicked[parsedKey(r)] && r.mid && r.at)
+        if (!items.length) { setDynMsg({ tone: 'warn', text: '先勾选要导入的预约（未匹配到主播名单的会跳过）' }); return }
+        setDynLoading('import')
+        try {
+          const r = await jpost('/plans', { action: 'import', items: items.map((x) => ({ mid: x.mid, name: x.name, at: x.at })) })
+          if (!r || r.ok === false) throw new Error((r && r.error) || '导入失败')
+          setDynMsg({ tone: 'good', text: `已导入 ${r.added} 条计划` + (r.skipped ? `，跳过 ${r.skipped} 条` : '') })
+          setParsed(null)
+          if (onRefresh) onRefresh()
+        } catch (e) {
+          setDynMsg({ tone: 'warn', text: '导入失败：' + errText(e) })
+        } finally { setDynLoading('') }
+      }
       return h(Section, { title: '值守模式' },
         h(ToggleRow, {
           label: '自动模式',
@@ -764,6 +814,42 @@ select[data-bd-input]{cursor:pointer;}
               r.title ? h('span', { 'data-bd-plan-cd': '', title: r.title }, '· ' + r.title.slice(0, 24)) : null))))
           : null,
         h(Note, null, '说明：读取的是 B站 账号里「已预约」的直播，只导入还没开播的场次；每条预约变成一个一次性计划（提前 10 分钟进房），已存在同主播同时间的计划会自动跳过。'),
+        h(Sub, null, '从个人动态识别导入（AI）'),
+        h(Row, null,
+          h('button', {
+            'data-bd-btn': '', disabled: dynLoading !== '',
+            onClick: loadDynamics,
+          }, dynLoading === 'list' ? '读取中…' : '读取我的动态'),
+          h(Note, null, '用 deepseek-flash（max 推理）识别动态里的直播预约；先在 B站 空间发一条包含预约信息的动态。')),
+        dynMsg ? h('div', { 'data-bd-msg': '', 'data-tone': dynMsg.tone }, dynMsg.text) : null,
+        dyns && dyns.length
+          ? h('div', { 'data-bd-list': '' }, dyns.map((d) => h('div', { 'data-bd-plan': '', key: d.id },
+              h('span', { 'data-bd-plan-time': '' }, d.publishedAt ? fmtPlanTime(new Date(d.publishedAt).toISOString()) : '时间未知'),
+              h('span', { 'data-bd-plan-name': '', title: d.text || '' }, (d.text || '（无文字）').slice(0, 60) + (d.images?.length ? `　[图×${d.images.length}]` : '')),
+              h('button', {
+                'data-bd-btn': '', 'data-mini': '', disabled: dynLoading !== '',
+                onClick: () => parseDyn(d.id),
+              }, dynLoading === 'parse' ? '识别中…' : 'AI 识别预约'))))
+          : null,
+        parsed
+          ? h('div', { 'data-bd-list': '' }, parsed.map((r, i) => h('div', { 'data-bd-plan': '', key: parsedKey(r) + '-' + i },
+              h('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', flex: '1', minWidth: 0, cursor: r.mid && r.at ? 'pointer' : 'default' } },
+                h('input', {
+                  type: 'checkbox', disabled: !(r.mid && r.at),
+                  checked: Boolean(parsedPicked[parsedKey(r)]),
+                  onChange: (e) => setParsedPicked((p) => ({ ...p, [parsedKey(r)]: e.target.checked })),
+                }),
+                h('span', { 'data-bd-plan-time': '' }, r.at ? fmtPlanTime(r.at) : '时间未知'),
+                h('span', { 'data-bd-plan-name': '', title: r.title || '' }, r.name || '未知主播'),
+                h(Tag, { tone: r.mid && r.at ? 'live' : 'bad' }, r.mid && r.at ? '匹配到名单' : '未匹配/时间不确定')))))
+          : null,
+        parsed && parsed.length
+          ? h(Row, null,
+              h('button', {
+                'data-bd-btn': '', 'data-primary': '', disabled: dynLoading !== '' || !Object.values(parsedPicked).some(Boolean),
+                onClick: importParsed,
+              }, dynLoading === 'import' ? '导入中…' : '导入所选为计划'))
+          : null,
         h(Note, null, '说明：手动计划与自动模式互不冲突，可以同时存在；同一时刻多条计划到期时，按计划时间早的优先。'))
     }
 

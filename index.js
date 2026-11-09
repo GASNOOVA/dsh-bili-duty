@@ -35,6 +35,7 @@ import {
   getGiftConfig,
   getLikePolicy,
   getReserveList,
+  getSpaceDynamics,
   getWallet,
   isRiskCode,
   sendGift,
@@ -131,6 +132,28 @@ function inWorkHours(range, ms = Date.now(), tz = 'beijing') {
   return cur >= start && cur < end
 }
 
+
+/** 把 B站 动态 item 归一成 {id,type,publishedAt,text,images,author} */
+function mapDynamicItem(it) {
+  const o = it && typeof it === 'object' ? it : {}
+  const md = o.modules?.module_dynamic || {}
+  const au = o.modules?.module_author || {}
+  const text = String(md.desc?.text || md.major?.opus?.summary?.text || '').trim()
+  const picList = md.major?.draw?.items || md.major?.opus?.pics || []
+  const images = picList
+    .map((x) => ({ url: String(x?.src || x?.url || ''), width: Number(x?.width) || 0, height: Number(x?.height) || 0 }))
+    .filter((x) => x.url)
+  const pubSec = Number(au.pub_ts)
+  const pubMs = Number.isFinite(pubSec) && pubSec > 0 ? pubSec * 1000 : Date.parse(String(au.pub_time || '')) || 0
+  return {
+    id: String(o.id_str || o.id || ''),
+    type: String(o.type || ''),
+    publishedAt: pubMs,
+    text,
+    images,
+    author: { mid: String(au.mid || ''), name: String(au.name || '') },
+  }
+}
 
 /** 把 B站 预约记录归一成 {mid, roomId, name, title, at(ISO)}；字段名做多版本兼容 */
 function mapReserveItem(it) {
@@ -725,6 +748,73 @@ export function apply(ctx) {
     }
   }
 
+  /* ── 个人动态 → AI 识别直播预约 ── */
+  rt.dynamicsCache = []
+
+  /** 用 LLM（deepseek-flash + max 推理）从动态文本里抽取直播预约 */
+  async function parseDynamicsWithLlm({ text = '', streamers = [] } = {}) {
+    if (!llm.available) return []
+    const nowBj = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
+    const roster = (streamers || []).map((x) => `${x.name}（UID ${x.mid}）`).join('、') || '（未配置主播）'
+    const prompt = [
+      '你要从一条 B站 个人动态里找出「直播预约 / 直播预告」信息。',
+      `当前北京时间：${nowBj}（UTC+8）。`,
+      `我的主播名单（名字→UID）：${roster}`,
+      '',
+      '动态内容（方括号之间）：',
+      '［动态开始］',
+      String(text || '').slice(0, 4000),
+      '［动态结束］',
+      '',
+      '只输出一个 JSON 数组（不要 markdown 代码块、不要解释），每个元素表示一条直播预约：',
+      '{"name":"主播名（用动态里出现的名字，尽量写成名单里的写法）","at":"开播时间，北京时间 ISO，例如 2026-11-11T20:00:00+08:00","title":"场次标题或空字符串","confidence":0.95}',
+      '规则：',
+      '1) 只提取明确是「预约/预告/某日某点开播」的直播信息；没有就输出 []；',
+      '2) 只有日期没年份时用最近的未来日期；出现「今天/明天/今晚8点」这类相对时间时，按上面的当前北京时间换算；',
+      '3) at 必须是北京时间（+08:00），不要输出 UTC；无法确定具体时间就跳过这条；',
+      '4) name 原样取自动态，不要编造；',
+      '5) 严格输出 JSON 数组。',
+    ].join('\n')
+    const raw = await llm.generate({
+      prompt,
+      maxTokens: 4000,
+      timeoutMs: 120000,
+      reasoningEffort: 'max',
+      onError: (e) => log(`动态识别没接上模型：${String(e?.message || e)}`),
+    })
+    const out = String(raw || '').trim()
+    if (!out) return []
+    const a = out.indexOf('[')
+    const b = out.lastIndexOf(']')
+    if (a < 0 || b <= a) return []
+    let arr = null
+    try { arr = JSON.parse(out.slice(a, b + 1)) } catch { return [] }
+    if (!Array.isArray(arr)) return []
+    const norm = (v) => String(v || '').replace(/\s+/g, '').toLowerCase()
+    const items = []
+    for (const it of arr) {
+      if (!it || typeof it !== 'object') continue
+      const name = String(it.name || '').trim()
+      const atTs = Date.parse(String(it.at || ''))
+      if (!name || !Number.isFinite(atTs)) continue
+      const hit = (streamers || []).find((x) => {
+        const a1 = norm(x.name)
+        const a2 = norm(name)
+        return a1 && a2 && (a1 === a2 || a1.includes(a2) || a2.includes(a1))
+      })
+      items.push({
+        name,
+        mid: hit ? String(hit.mid) : '',
+        matched: Boolean(hit),
+        at: new Date(atTs).toISOString(),
+        title: String(it.title || '').trim().slice(0, 60),
+        confidence: Number(it.confidence) || 0,
+        rawAt: String(it.at || ''),
+      })
+    }
+    return items
+  }
+
   /* ── 手动计划（一次性） ── */
   function pendingPlans() { return (cfg.plans || []).filter((p) => p.status === 'pending') }
 
@@ -1010,6 +1100,53 @@ export function apply(ctx) {
           rawCount: rawList.length,
           sampleKeys: rawList[0] && typeof rawList[0] === 'object' ? Object.keys(rawList[0]) : null,
         },
+      })
+    }
+
+    if (req.method === 'GET' && path.endsWith('/dynamics')) {
+      const cred = loadCred()
+      if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证（请先扫码登录）' })
+      const me = String(cred.dedeuserid || '')
+      if (!me) return sendJson(res, 200, { ok: false, error: '凭证里没有自己的 UID' })
+      const r = await getSpaceDynamics(cred, me)
+      if (!r.ok) return sendJson(res, 200, { ok: false, error: describeError(r.code, r.message), code: r.code })
+      const rawItems = Array.isArray(r.data?.items) ? r.data.items : []
+      const items = rawItems.map(mapDynamicItem)
+      rt.dynamicsCache = items
+      return sendJson(res, 200, {
+        ok: true,
+        count: items.length,
+        selfMid: me,
+        items: items.map((x) => ({ ...x, images: x.images.slice(0, 4) })),
+        debug: { rawCount: rawItems.length, sampleKeys: rawItems[0] ? Object.keys(rawItems[0]) : null },
+      })
+    }
+
+    if (req.method === 'POST' && path.endsWith('/dynamics/parse')) {
+      const body = await readBody(req)
+      let text = String(body.text || '').trim()
+      let images = []
+      let sourceId = ''
+      if (body.id) {
+        const it = (rt.dynamicsCache || []).find((x) => String(x.id) === String(body.id))
+        if (it) { text = it.text; images = it.images || []; sourceId = it.id }
+      }
+      if (!text) {
+        return sendJson(res, 200, {
+          ok: false,
+          error: images.length ? '这条动态只有图片、没有文字；图片日程表解析在下一步实现' : '没有可解析的文字内容',
+        })
+      }
+      if (!llm.available) return sendJson(res, 200, { ok: false, error: '宿主没有提供 llm 服务' })
+      const t0 = Date.now()
+      const items = await parseDynamicsWithLlm({ text, streamers: cfg.streamers })
+      log(`动态识别：${items.length} 条预约（${Date.now() - t0}ms）`)
+      return sendJson(res, 200, {
+        ok: true,
+        sourceId,
+        count: items.length,
+        items,
+        textPreview: text.slice(0, 200),
       })
     }
 

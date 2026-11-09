@@ -87,6 +87,14 @@
 - 导入走 `POST /plans {action:'import', items}`：校验时间 > 现在、按「mid + 时间」去重、计划上限 50，返回 `{added, skipped}`。
 - 待验证：当前账号返回 0 条预约，字段结构要等有真实预约后再确认（`/reserves` 的 `debug.sampleKeys` 会给出原始字段名）。
 
+### 4.2.2 从个人动态识别预约（2026-11-09 新增，阶段一：文字）
+
+- 背景：`GetReserveList` 对观众账号返回 `{list:null}`，读不到「已预约的直播」，改用个人空间动态作为数据源。
+- `GET /api/bili-duty/dynamics`：polymer 空间动态接口（`feed/space?host_mid=<自己>`），归一为 `{id,type,publishedAt,text,images,author}`；图片兼容 `major.draw.items[].src` 与 `major.opus.pics[].url`。
+- `POST /api/bili-duty/dynamics/parse {id|text}`：用 `deepseek-flash + reasoningEffort=max` 抽取 JSON 数组 `[{name,at(北京时间 ISO),title,confidence}]`，解析后把主播名模糊匹配到配置名单（补 mid）、时间统一转 ISO UTC。LLM 输出必须可 JSON 解析，否则返回空。
+- 前端「从个人动态识别导入（AI）」：读取动态 → 单条 AI 识别 → 勾选 → 复用 `/plans {action:'import'}` 导入。
+- 阶段二（待做）：官方日程表图片的视觉识别（拉图 → attachments.saveImage → LLM 多模态）。
+
 ### 4.3 多主播同时开播：主看房 + 任务房切换（核心规则）
 
 1. **主看房（陪伴）**：手动计划目标优先；其次自动模式按列表顺序第一个在播；已在播就不换。
