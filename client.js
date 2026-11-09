@@ -122,6 +122,7 @@ select[data-bd-input]{cursor:pointer;}
     const DEFAULT_UI = {
       autoCheckMin: '15', workHours: '08:00-24:00', greetingCount: '10', greetingSpacingSec: '30',
       aiIntervalSec: '300', aiDailyMax: '100', danmakuDailyMax: '150', danmakuCooldownSec: '3',
+      aiMode: 'follow', aiFollowWindowSec: '60', aiFollowMinCount: '3',
       maxLen: '20', likeClicks: '300', likeRoundMin: '10', giftDailyMax: '5', watchQn: '150',
     }
     const WH_RE = /^(?:[01]?\d|2[0-3]):[0-5]\d\s*-\s*(?:(?:[01]?\d|2[0-3]):[0-5]\d|24:00)$/
@@ -184,6 +185,9 @@ select[data-bd-input]{cursor:pointer;}
         greetingCount: String(c.templateGreetingCount ?? DEFAULT_UI.greetingCount),
         greetingSpacingSec: String(Math.round((Number(c.templateSpacingMs) || 30000) / 1000)),
         greetingText: (Array.isArray(c.greetingTemplates) ? c.greetingTemplates : DEFAULT_GREETINGS).join('\n'),
+        aiMode: c.aiDanmakuMode === 'generate' ? 'generate' : 'follow',
+        aiFollowWindowSec: String(Math.round((Number(c.aiFollowWindowMs) || 60000) / 1000)),
+        aiFollowMinCount: String(c.aiFollowMinCount ?? DEFAULT_UI.aiFollowMinCount),
         aiIntervalSec: String(Math.round((Number(c.aiDanmakuMs) || 300000) / 1000)),
         aiDailyMax: String(c.aiDanmakuDailyMax ?? DEFAULT_UI.aiDailyMax),
         danmakuDailyMax: String(c.danmakuDailyMax ?? DEFAULT_UI.danmakuDailyMax),
@@ -210,8 +214,11 @@ select[data-bd-input]{cursor:pointer;}
       templateSpacingMs: clampInt(Number(f.greetingSpacingSec) * 1000, 10000, 120000, 30000),
       greetingTemplates: parseGreetings(f.greetingText),
       aiDanmaku: !!f.aiDanmaku,
+      aiDanmakuMode: f.aiMode === 'generate' ? 'generate' : 'follow',
       aiDanmakuMs: clampInt(Number(f.aiIntervalSec) * 1000, 30000, 600000, 300000),
       aiDanmakuDailyMax: clampInt(f.aiDailyMax, 10, 300, 100),
+      aiFollowWindowMs: clampInt(Number(f.aiFollowWindowSec) * 1000, 20000, 300000, 60000),
+      aiFollowMinCount: clampInt(f.aiFollowMinCount, 2, 20, 3),
       danmakuDailyMax: clampInt(f.danmakuDailyMax, 20, 600, 150),
       danmakuCooldownMs: clampInt(Number(f.danmakuCooldownSec) * 1000, 1000, 60000, 3000),
       maxLen: clampInt(f.maxLen, 5, 40, 20),
@@ -726,9 +733,26 @@ select[data-bd-input]{cursor:pointer;}
           note: '每行一条，最多 20 行，每条不超过 20 字；重复行会被自动去掉。条数不够时循环使用。',
         }),
         h(ToggleRow, {
-          label: 'AI 智能弹幕', note: '根据房间标题和最近弹幕生成一句像观众随口搭腔的话；模型不可用时静默跳过。',
+          label: 'AI 智能弹幕', note: '跟风复读（默认）：读窗口内弹幕流，复制正在被刷屏的那一句；自由生成：按直播内容自己写。模型不可用时跟风模式退回本地计数。',
           on: form.aiDanmaku !== false, onChange: (v) => saveToggle('aiDanmaku', v, v ? '已开启 AI 弹幕' : '已关闭 AI 弹幕'), disabled: saving,
         }),
+        h(SelectField, {
+          label: 'AI 弹幕模式', value: form.aiMode,
+          onChange: (v) => setForm((f) => ({ ...f, aiMode: v })),
+          options: optionPairs([['follow', '跟风复读（默认）：复制窗口内刷屏最多的一句'], ['generate', '自由生成：按直播内容自己写一句']]),
+          note: '跟风复读用 LLM 在候选里挑「大家正在跟着刷」的那句原样复制；选中结果必须在候选里（防止模型瞎编）。',
+        }),
+        form.aiMode === 'follow'
+          ? h(FieldGrid, null,
+              h(NumField, {
+                label: '跟风窗口', unit: '秒', min: 20, max: 300, value: form.aiFollowWindowSec,
+                onChange: (v) => setForm((f) => ({ ...f, aiFollowWindowSec: v })), note: '范围 20–300 秒，默认 60 秒；只看这个时间窗口内的弹幕',
+              }),
+              h(NumField, {
+                label: '最少重复次数', unit: '次', min: 2, max: 20, value: form.aiFollowMinCount,
+                onChange: (v) => setForm((f) => ({ ...f, aiFollowMinCount: v })), note: '范围 2–20 次，默认 3 次；窗口内重复达到这个次数才跟',
+              }))
+          : null,
         h(FieldGrid, null,
           h(NumField, {
             label: 'AI 弹幕间隔', unit: '秒', min: 30, max: 600, value: form.aiIntervalSec,
