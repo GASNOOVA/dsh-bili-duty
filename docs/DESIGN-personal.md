@@ -80,12 +80,9 @@
 - 提前进房后如果主播迟迟不开播：保持房间页面在线（弹幕连接），不执行任务（房间没开播时点赞/弹幕无意义且有风险）。
 - 多条计划同时到期：都进不了同一时刻 —— 按「计划时间早 → 列表顺序」取第一条作为主看房，其余计划转为「任务房候补」，满足 §4.3 的补任务条件时再切换。
 
-### 4.2.1 从「已预约直播」导入计划（2026-11-09 新增）
+### 4.2.1 从「已预约直播」导入计划（已移除）
 
-- 后端 `GET /api/bili-duty/reserves`：调 B站 `/xlive/app-ucenter/v2/schedule/GetReserveList?page=1&page_size=50`（P0 实测接口存在；无预约时 `data.list=null`），把记录归一成 `{mid, roomId, name, title, at}`（字段名做多版本兼容：uid/up_uid、room_id、start_time 秒或毫秒/ISO 等），只保留时间可解析的记录。
-- 前端「值守模式 → 从已预约直播导入」：读取 → 勾选（默认全选未来场次）→ 导入。
-- 导入走 `POST /plans {action:'import', items}`：校验时间 > 现在、按「mid + 时间」去重、计划上限 50，返回 `{added, skipped}`。
-- 待验证：当前账号返回 0 条预约，字段结构要等有真实预约后再确认（`/reserves` 的 `debug.sampleKeys` 会给出原始字段名）。
+2026-11-09 曾实现 `GET /reserves`（B站 `GetReserveList`）+ `/plans {action:'import'}` 批量导入，但该接口对观众账号始终返回 `{list:null}`，功能不可用；2026-11-10 按用户要求**整条移除**（后端路由、`lib/duty-actions.mjs` 的 `getReserveList`、设置页入口全部删除）。`/plans {action:'import'}` 保留，供动态导入复用。
 
 ### 4.2.2 从个人动态识别预约（2026-11-09 新增，阶段一：文字）
 
@@ -369,7 +366,7 @@
 ### 14.1 已完成文件
 | 文件 | 行数 | 说明 |
 | --- | --- | --- |
-| `index.js` | ~1100 | 宿主端重写：凭证/配置/状态、心跳调度、主看房、手动计划、每日任务（观看/问候/AI 弹幕/点赞/打赏）、巡视补任务、预约读取/批量导入、19 条 `/api/bili-duty/*` 路由 |
+| `index.js` | ~1200 | 宿主端重写：凭证/配置/状态、心跳调度、主看房、手动计划、每日任务（观看/问候/AI 弹幕/点赞/打赏）、巡视补任务、动态识别/卡片直读/导入与清理、`/api/bili-duty/*` 路由 |
 | `lib/duty-config.mjs` | 317 | DEFAULTS 29 键 + normalizeStreamer/normalizeConfig/mergeConfig |
 | `lib/duty-state.mjs` | 415 | 每日任务状态 store（原子写、北京日期、跨日重置） |
 | `lib/duty-actions.mjs` | 530 | 进房/点赞策略/点赞/礼物配置/钱包/粉丝牌/送礼/错误码映射（P0 实测参数） |

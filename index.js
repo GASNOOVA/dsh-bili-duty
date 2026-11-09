@@ -35,7 +35,6 @@ import {
   findGift,
   getGiftConfig,
   getLikePolicy,
-  getReserveList,
   getSpaceDynamics,
   getWallet,
   isRiskCode,
@@ -187,30 +186,6 @@ function mapDynamicItem(it) {
   }
 }
 
-
-/** 把 B站 预约记录归一成 {mid, roomId, name, title, at(ISO)}；字段名做多版本兼容 */
-function mapReserveItem(it) {
-  const o = it && typeof it === 'object' ? it : {}
-  const mid = String(o.uid ?? o.up_uid ?? o.anchor_uid ?? o.mid ?? o.upUid ?? '')
-  const roomId = String(o.room_id ?? o.roomId ?? o.real_room_id ?? o.realRoomId ?? '')
-  const name = String(o.uname ?? o.up_name ?? o.anchor_name ?? o.name ?? o.title ?? '')
-  const title = String(o.title ?? o.live_title ?? o.description ?? '')
-  const rawAt = o.start_time ?? o.startTime ?? o.live_time ?? o.begin_time ?? o.scheduled_time ?? o.stime ?? o.at ?? o.reserve_time
-  let at = NaN
-  if (typeof rawAt === 'number') at = rawAt > 1e12 ? rawAt : rawAt * 1000
-  else if (typeof rawAt === 'string' && rawAt.trim()) {
-    const n = Number(rawAt)
-    if (Number.isFinite(n)) at = n > 1e12 ? n : n * 1000
-    else at = Date.parse(rawAt)
-  }
-  return {
-    mid,
-    roomId,
-    name: name || (mid ? `主播 ${mid}` : ''),
-    title,
-    at: Number.isFinite(at) ? new Date(at).toISOString() : '',
-  }
-}
 
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj)
@@ -1118,25 +1093,6 @@ export function apply(ctx) {
       } catch (e) {
         return sendJson(res, 200, { ok: false, error: String(e?.message || e) })
       }
-    }
-
-    if (req.method === 'GET' && path.endsWith('/reserves')) {
-      const cred = loadCred()
-      if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证（请先扫码登录）' })
-      const r = await getReserveList(cred, { page: 1, pageSize: 50 })
-      if (!r.ok) return sendJson(res, 200, { ok: false, error: describeError(r.code, r.message), code: r.code })
-      const rawList = Array.isArray(r.data?.list) ? r.data.list : []
-      const items = rawList.map(mapReserveItem).filter((x) => x.mid || x.roomId)
-      return sendJson(res, 200, {
-        ok: true,
-        count: items.length,
-        items,
-        future: items.filter((x) => x.at && Date.parse(x.at) > Date.now()).length,
-        debug: {
-          rawCount: rawList.length,
-          sampleKeys: rawList[0] && typeof rawList[0] === 'object' ? Object.keys(rawList[0]) : null,
-        },
-      })
     }
 
     if (req.method === 'POST' && path.endsWith('/card-parse')) {
