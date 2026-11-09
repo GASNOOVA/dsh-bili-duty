@@ -674,6 +674,8 @@ select[data-bd-input]{cursor:pointer;}
       const [dynMsg, setDynMsg] = React.useState(null)
       const [parsed, setParsed] = React.useState(null)
       const [parsedPicked, setParsedPicked] = React.useState({})
+      const [parsedSource, setParsedSource] = React.useState('')
+      const [delAfterImport, setDelAfterImport] = React.useState(true)
       const parsedKey = (r) => String(r.mid || r.name) + '|' + String(r.at || '')
       const loadDynamics = async () => {
         setDynLoading('list'); setDynMsg(null); setParsed(null)
@@ -688,7 +690,7 @@ select[data-bd-input]{cursor:pointer;}
         } finally { setDynLoading('') }
       }
       const parseDyn = async (id) => {
-        setDynLoading('parse'); setDynMsg(null); setParsed(null)
+        setDynLoading('parse'); setDynMsg(null); setParsed(null); setParsedSource(String(id || ''))
         try {
           const r = await jpost('/dynamics/parse', { id })
           if (!r || r.ok === false) throw new Error((r && r.error) || '识别失败')
@@ -713,8 +715,25 @@ select[data-bd-input]{cursor:pointer;}
         try {
           const r = await jpost('/plans', { action: 'import', items: items.map((x) => ({ mid: x.mid, name: x.name, at: x.at })) })
           if (!r || r.ok === false) throw new Error((r && r.error) || '导入失败')
-          setDynMsg({ tone: 'good', text: `已导入 ${r.added} 条计划` + (r.skipped ? `，跳过 ${r.skipped} 条` : '') })
+          let msg = `已导入 ${r.added} 条计划` + (r.skipped ? `，跳过 ${r.skipped} 条` : '')
+          let deleted = false
+          if (delAfterImport && parsedSource && r.added > 0) {
+            try {
+              const d = await jpost('/dynamics/delete', { id: parsedSource })
+              if (d && d.ok) {
+                deleted = true
+                setDyns((list) => (Array.isArray(list) ? list.filter((x) => String(x.id) !== String(parsedSource)) : list))
+                msg += '；已删除对应的转发动态'
+              } else {
+                msg += '；但删除动态失败：' + ((d && d.error) || '未知原因')
+              }
+            } catch (e) {
+              msg += '；但删除动态失败：' + errText(e)
+            }
+          }
+          setDynMsg({ tone: deleted || !delAfterImport ? 'good' : 'warn', text: msg })
           setParsed(null)
+          setParsedSource('')
           if (onRefresh) onRefresh()
         } catch (e) {
           setDynMsg({ tone: 'warn', text: '导入失败：' + errText(e) })
@@ -832,7 +851,22 @@ select[data-bd-input]{cursor:pointer;}
               h('button', {
                 'data-bd-btn': '', 'data-mini': '', disabled: dynLoading !== '',
                 onClick: () => parseDyn(d.id),
-              }, dynLoading === 'parse' ? '识别中…' : (d.reserve ? '直接读取卡片' : 'AI 识别预约')))))
+              }, dynLoading === 'parse' ? '识别中…' : (d.reserve ? '直接读取卡片' : 'AI 识别预约')),
+              h('button', {
+                'data-bd-btn': '', 'data-mini': '', 'data-danger': '', disabled: dynLoading !== '',
+                onClick: async () => {
+                  if (typeof window !== 'undefined' && window.confirm && !window.confirm('确定删除这条动态？（不可恢复）')) return
+                  setDynLoading('delete')
+                  try {
+                    const r = await jpost('/dynamics/delete', { id: d.id })
+                    if (!r || r.ok === false) throw new Error((r && r.error) || '删除失败')
+                    setDyns((list) => (Array.isArray(list) ? list.filter((x) => String(x.id) !== String(d.id)) : list))
+                    setDynMsg({ tone: 'good', text: '已删除这条动态' })
+                  } catch (e) {
+                    setDynMsg({ tone: 'warn', text: '删除失败：' + errText(e) })
+                  } finally { setDynLoading('') }
+                },
+              }, dynLoading === 'delete' ? '删除中…' : '删除'))))
           : null,
         parsed
           ? h('div', { 'data-bd-list': '' }, parsed.map((r, i) => h('div', { 'data-bd-plan': '', key: parsedKey(r) + '-' + i },
@@ -851,7 +885,13 @@ select[data-bd-input]{cursor:pointer;}
               h('button', {
                 'data-bd-btn': '', 'data-primary': '', disabled: dynLoading !== '' || !Object.values(parsedPicked).some(Boolean),
                 onClick: importParsed,
-              }, dynLoading === 'import' ? '导入中…' : '导入所选为计划'))
+              }, dynLoading === 'import' ? '导入中…' : '导入所选为计划'),
+              h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary,#9aa0a6)', cursor: 'pointer' } },
+                h('input', {
+                  type: 'checkbox', checked: delAfterImport,
+                  onChange: (e) => setDelAfterImport(e.target.checked),
+                }),
+                '导入成功后删除这条转发动态（保持空间干净）'))
           : null,
         h(Note, null, '说明：手动计划与自动模式互不冲突，可以同时存在；同一时刻多条计划到期时，按计划时间早的优先。'))
     }

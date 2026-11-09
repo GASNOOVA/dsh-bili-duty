@@ -29,6 +29,7 @@ import { DEFAULTS, mergeConfig, normalizeConfig, normalizeStreamer } from './lib
 import { beijingDateKey, createStore } from './lib/duty-state.mjs'
 import {
   clickLike,
+  deleteDynamic,
   describeError,
   enterRoom,
   findGift,
@@ -1143,6 +1144,25 @@ export function apply(ctx) {
       const fromItem = body.item ? extractCardReserve(body.item) : null
       const parsed = fromItem || (body.card ? parseLiveCard(body.card) : null)
       return sendJson(res, 200, { ok: Boolean(parsed), parsed, item: Boolean(body.item) })
+    }
+
+    if (req.method === 'POST' && path.endsWith('/dynamics/delete')) {
+      const body = await readBody(req)
+      const id = String(body.id || '').replace(/\D/g, '')
+      if (!id) return sendJson(res, 200, { ok: false, error: '动态 ID 不合法' })
+      // 只允许删自己空间里刚读出来的动态，防止误删别人的
+      const cached = (rt.dynamicsCache || []).find((x) => String(x.id) === id)
+      if (!cached) return sendJson(res, 200, { ok: false, error: '这条动态不在最近读取的列表里，请先点「读取我的动态」' })
+      const cred = loadCred()
+      if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证' })
+      const r = await deleteDynamic(cred, id)
+      if (!r.ok) {
+        logErr(`删除动态失败（${id}）：${describeError(r.code, r.message)}`)
+        return sendJson(res, 200, { ok: false, error: describeError(r.code, r.message), code: r.code })
+      }
+      rt.dynamicsCache = (rt.dynamicsCache || []).filter((x) => String(x.id) !== id)
+      log(`已删除动态 ${id}`)
+      return sendJson(res, 200, { ok: true, id })
     }
 
     if (req.method === 'GET' && path.endsWith('/dynamics')) {
