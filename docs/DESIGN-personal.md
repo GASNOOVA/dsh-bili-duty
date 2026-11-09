@@ -93,6 +93,7 @@
 - `GET /api/bili-duty/dynamics`：polymer 空间动态接口（`feed/space?host_mid=<自己>`），归一为 `{id,type,publishedAt,text,images,author}`；图片兼容 `major.draw.items[].src` 与 `major.opus.pics[].url`。
 - `POST /api/bili-duty/dynamics/parse {id|text}`：用 `deepseek-flash + reasoningEffort=max` 抽取 JSON 数组 `[{name,at(北京时间 ISO),title,confidence}]`，解析后把主播名模糊匹配到配置名单（补 mid）、时间统一转 ISO UTC。LLM 输出必须可 JSON 解析，否则返回空。
 - 前端「从个人动态识别导入（AI）」：读取动态 → 单条 AI 识别 → 勾选 → 复用 `/plans {action:'import'}` 导入。
+- **预约卡片直读（0 token）**：`lib/duty-card.mjs` 解析 `major.live_rcmd.content` / `major.live` 的结构化 JSON：时间字段多版本兼容（秒/毫秒/`YYYY-MM-DD HH:mm:ss`、字段名 live_start_time/start_time/plan_time/start_ts 等），主播/标题/房间号同样多字段兜底；转发动态会到 `orig` 里找卡片。`/dynamics/parse` 优先走卡片直读（`source:'card'`），解析不出才回退 LLM。实测 9/9 合成结构测试通过；真实卡片字段待用户转发一条后最终确认（`/dynamics` 的 `debugCard` 会带出未解析的原始 content）。
 - **转发动态**：`DYNAMIC_TYPE_FORWARD` 的正文在 `orig` 里；`mapDynamicItem` 会合并 `orig` 的 opus 文本 / draw 图片 / live_rcmd 预约卡片，并带上「转发自 <原动态作者>」，LLM 据此把主播名落到原动态作者上（实测：转发贝拉kira预约动态 → 识别出 2026-11-17 12:00 北京、匹配 UID 672353429，并成功创建计划）。
 - 阶段二（待做）：官方日程表图片的视觉识别（拉图 → attachments.saveImage → LLM 多模态）。
 

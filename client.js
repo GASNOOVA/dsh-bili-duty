@@ -697,9 +697,11 @@ select[data-bd-input]{cursor:pointer;}
           const init = {}
           for (const it of items) if (it.mid && it.at) init[parsedKey(it)] = true
           setParsedPicked(init)
+          const viaCard = r.source === 'card'
           setDynMsg({ tone: items.length ? 'good' : 'warn', text: items.length
-            ? `识别出 ${items.length} 条预约` + (items.some((x) => !x.matched || !x.mid) ? '（有未匹配到主播名单的项，导入时会跳过）' : '')
-            : '这条动态里没有识别出明确的直播预约（或模型输出为空）' })
+            ? (viaCard ? `从预约卡片直接读取 ${items.length} 条（未用模型）` : `AI 识别出 ${items.length} 条预约`)
+              + (items.some((x) => !x.matched || !x.mid) ? '（有未匹配到主播名单的项，导入时会跳过）' : '')
+            : (viaCard ? '卡片里没解析出预约信息' : '这条动态里没有识别出明确的直播预约（或模型输出为空）') })
         } catch (e) {
           setDynMsg({ tone: 'warn', text: 'AI 识别失败：' + errText(e) })
         } finally { setDynLoading('') }
@@ -826,10 +828,11 @@ select[data-bd-input]{cursor:pointer;}
           ? h('div', { 'data-bd-list': '' }, dyns.map((d) => h('div', { 'data-bd-plan': '', key: d.id },
               h('span', { 'data-bd-plan-time': '' }, d.publishedAt ? fmtPlanTime(new Date(d.publishedAt).toISOString()) : '时间未知'),
               h('span', { 'data-bd-plan-name': '', title: d.text || '' }, (d.text || '（无文字）').slice(0, 60) + (d.images?.length ? `　[图×${d.images.length}]` : '')),
+              d.reserve ? h(Tag, { tone: 'live' }, '预约卡片') : null,
               h('button', {
                 'data-bd-btn': '', 'data-mini': '', disabled: dynLoading !== '',
                 onClick: () => parseDyn(d.id),
-              }, dynLoading === 'parse' ? '识别中…' : 'AI 识别预约'))))
+              }, dynLoading === 'parse' ? '识别中…' : (d.reserve ? '直接读取卡片' : 'AI 识别预约')))))
           : null,
         parsed
           ? h('div', { 'data-bd-list': '' }, parsed.map((r, i) => h('div', { 'data-bd-plan': '', key: parsedKey(r) + '-' + i },

@@ -41,6 +41,7 @@ import {
   sendGift,
 } from './lib/duty-actions.mjs'
 import { pullStream } from './lib/duty-watch.mjs'
+import { extractCardReserve, parseLiveCard } from './lib/duty-card.mjs'
 import { DanmakuClient, getRoomByUid, getRoomInfo, sendDanmaku } from './lib/live.mjs'
 import { generateQr, pollQr, qrSvg, whoAmI } from './lib/auth.mjs'
 import { makeLlm } from './lib/llm.mjs'
@@ -170,6 +171,7 @@ function mapDynamicItem(it) {
     if (orig.card) parts.push(`${head}【预约/直播卡片】${orig.card}`)
   }
   const images = [...(own.images || []), ...((orig && orig.images) || [])]
+  const reserve = extractCardReserve(o)
   return {
     id: String(o.id_str || o.id || ''),
     type: String(o.type || ''),
@@ -178,6 +180,9 @@ function mapDynamicItem(it) {
     images,
     author: own.author,
     forward: orig ? { author: orig.author, text: orig.text, card: orig.card } : null,
+    reserve,
+    // 有卡片但解析失败时，把原始 content 带出来，便于以后适配字段
+    debugCard: !reserve && (own.card || (orig && orig.card)) ? String(own.card || (orig && orig.card)).slice(0, 1500) : '',
   }
 }
 
@@ -1133,6 +1138,13 @@ export function apply(ctx) {
       })
     }
 
+    if (req.method === 'POST' && path.endsWith('/card-parse')) {
+      const body = await readBody(req)
+      const fromItem = body.item ? extractCardReserve(body.item) : null
+      const parsed = fromItem || (body.card ? parseLiveCard(body.card) : null)
+      return sendJson(res, 200, { ok: Boolean(parsed), parsed, item: Boolean(body.item) })
+    }
+
     if (req.method === 'GET' && path.endsWith('/dynamics')) {
       const cred = loadCred()
       if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证（请先扫码登录）' })
@@ -1158,14 +1170,41 @@ export function apply(ctx) {
       let images = []
       let sourceId = ''
       let meta = null
+      let card = null
+      let cached = null
+      if (body.card) card = parseLiveCard(body.card)
       if (body.id) {
         const it = (rt.dynamicsCache || []).find((x) => String(x.id) === String(body.id))
         if (it) {
+          cached = it
           text = it.text
           images = it.images || []
           sourceId = it.id
           meta = { publishedAt: it.publishedAt, author: it.author?.name || '', forwardAuthor: it.forward?.author?.name || '' }
+          if (!card && it.reserve) card = it.reserve
         }
+      }
+      // ① 卡片直读：结构化 JSON，0 token
+      if (card && card.atMs) {
+        const norm = (v) => String(v || '').replace(/\s+/g, '').toLowerCase()
+        const hit = (cfg.streamers || []).find((x) => {
+          if (card.mid && String(x.mid) === String(card.mid)) return true
+          const a1 = norm(x.name)
+          const a2 = norm(card.name)
+          return a1 && a2 && (a1 === a2 || a1.includes(a2) || a2.includes(a1))
+        })
+        const items = [{
+          name: card.name || (hit ? hit.name : ''),
+          mid: hit ? String(hit.mid) : String(card.mid || ''),
+          matched: Boolean(hit),
+          at: new Date(card.atMs).toISOString(),
+          title: card.title || '',
+          confidence: 1,
+          rawAt: '',
+          source: 'card',
+        }]
+        log(`动态卡片直读：${items[0].name || items[0].mid} · ${items[0].at}`)
+        return sendJson(res, 200, { ok: true, source: 'card', sourceId, count: 1, items, textPreview: text.slice(0, 200) })
       }
       if (!text) {
         return sendJson(res, 200, {
@@ -1179,6 +1218,7 @@ export function apply(ctx) {
       log(`动态识别：${items.length} 条预约（${Date.now() - t0}ms）`)
       return sendJson(res, 200, {
         ok: true,
+        source: 'llm',
         sourceId,
         count: items.length,
         items,
