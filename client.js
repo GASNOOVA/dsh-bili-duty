@@ -621,7 +621,7 @@ select[data-bd-input]{cursor:pointer;}
     }
 
     /* ────────────────────────── ④ 值守模式（自动 + 手动计划） ────────────────────────── */
-    function ModeCard({ st, form, setForm, saveToggle, onAddPlan, onRemovePlan, busy, now }) {
+    function ModeCard({ st, form, setForm, saveToggle, onAddPlan, onRemovePlan, onRefresh, busy, now }) {
       const [planMid, setPlanMid] = React.useState('')
       const [planAt, setPlanAt] = React.useState('')
       const streamers = form.streamers || []
@@ -631,6 +631,43 @@ select[data-bd-input]{cursor:pointer;}
       const mode = st.mode || {}
       const next = mode.auto === false ? 0 : (Number(mode.nextCheckAt) || 0)
       const plans = (st.plans || []).slice().sort((a, b) => (Date.parse(a.at) || 0) - (Date.parse(b.at) || 0))
+      /* ── 从 B站「已预约直播」批量导入计划 ── */
+      const [reserves, setReserves] = React.useState(null)
+      const [resLoading, setResLoading] = React.useState(false)
+      const [resPicked, setResPicked] = React.useState({})
+      const [resMsg, setResMsg] = React.useState(null)
+      const resKey = (r) => String(r.mid) + '|' + String(r.at || '') + '|' + String(r.roomId || '')
+      const loadReserves = async () => {
+        setResLoading(true); setResMsg(null)
+        try {
+          const d = await jget('/reserves')
+          if (!d || d.ok === false) throw new Error((d && d.error) || '读取失败')
+          const items = (Array.isArray(d.items) ? d.items : []).filter((x) => x.at && Date.parse(x.at) > Date.now())
+          setReserves(items)
+          const init = {}
+          for (const it of items) init[resKey(it)] = true
+          setResPicked(init)
+          setResMsg({ tone: 'good', text: items.length
+            ? `读到 ${items.length} 条未开播的预约（已勾选，直接点导入即可）`
+            : '当前账号没有未开播的预约。已开播/已过期的预约不会导入。' })
+        } catch (e) {
+          setReserves(null)
+          setResMsg({ tone: 'warn', text: '读取预约失败：' + errText(e) })
+        } finally { setResLoading(false) }
+      }
+      const importReserves = async () => {
+        const items = (reserves || []).filter((r) => resPicked[resKey(r)])
+        if (!items.length) { setResMsg({ tone: 'warn', text: '先勾选要导入的预约' }); return }
+        setResLoading(true)
+        try {
+          const r = await jpost('/plans', { action: 'import', items: items.map((x) => ({ mid: x.mid, name: x.name, at: x.at })) })
+          if (!r || r.ok === false) throw new Error((r && r.error) || '导入失败')
+          setResMsg({ tone: 'good', text: `已导入 ${r.added} 条计划` + (r.skipped ? `，跳过 ${r.skipped} 条（已存在/时间已过/计划上限）` : '') })
+          if (onRefresh) onRefresh()
+        } catch (e) {
+          setResMsg({ tone: 'warn', text: '导入失败：' + errText(e) })
+        } finally { setResLoading(false) }
+      }
       return h(Section, { title: '值守模式' },
         h(ToggleRow, {
           label: '自动模式',
@@ -693,6 +730,40 @@ select[data-bd-input]{cursor:pointer;}
               onClick: () => onRemovePlan(p.id),
             }, '删除'))))
           : h(Note, null, '还没有手动计划。临时想守某个主播的某场直播，就在这里加一条。'),
+        h(Sub, null, '从已预约直播导入'),
+        h(Row, null,
+          h('button', {
+            'data-bd-btn': '', disabled: resLoading,
+            onClick: loadReserves,
+          }, resLoading ? '处理中…' : '读取我的预约'),
+          reserves && reserves.length
+            ? h('button', {
+                'data-bd-btn': '', 'data-mini': '',
+                onClick: () => { const all = {}; for (const it of reserves) all[resKey(it)] = true; setResPicked(all) },
+              }, '全选')
+            : null,
+          reserves && reserves.length
+            ? h('button', { 'data-bd-btn': '', 'data-mini': '', onClick: () => setResPicked({}) }, '清空选择')
+            : null,
+          reserves && reserves.length
+            ? h('button', {
+                'data-bd-btn': '', 'data-primary': '', disabled: resLoading,
+                onClick: importReserves,
+              }, '导入所选为计划')
+            : null),
+        resMsg ? h('div', { 'data-bd-msg': '', 'data-tone': resMsg.tone }, resMsg.text) : null,
+        reserves && reserves.length
+          ? h('div', { 'data-bd-list': '' }, reserves.map((r, i) => h('div', { 'data-bd-plan': '', key: resKey(r) + '-' + i },
+            h('label', { style: { display: 'flex', alignItems: 'center', gap: '7px', flex: '1', minWidth: 0, cursor: 'pointer' } },
+              h('input', {
+                type: 'checkbox', checked: Boolean(resPicked[resKey(r)]),
+                onChange: (e) => setResPicked((p) => ({ ...p, [resKey(r)]: e.target.checked })),
+              }),
+              h('span', { 'data-bd-plan-time': '' }, r.at ? fmtPlanTime(r.at) : '时间未知'),
+              h('span', { 'data-bd-plan-name': '', title: (r.name || '') + (r.title ? ' · ' + r.title : '') }, r.name || r.mid || '未知主播'),
+              r.title ? h('span', { 'data-bd-plan-cd': '', title: r.title }, '· ' + r.title.slice(0, 24)) : null))))
+          : null,
+        h(Note, null, '说明：读取的是 B站 账号里「已预约」的直播，只导入还没开播的场次；每条预约变成一个一次性计划（提前 10 分钟进房），已存在同主播同时间的计划会自动跳过。'),
         h(Note, null, '说明：手动计划与自动模式互不冲突，可以同时存在；同一时刻多条计划到期时，按计划时间早的优先。'))
     }
 
@@ -1064,7 +1135,7 @@ select[data-bd-input]{cursor:pointer;}
         h(Note, null, '说明：开关类改动会立即保存；数字、文本、下拉和主播名单编辑要滚到页面最底部点「保存全部设置」。'),
         h(AccountCard, { st, refresh, setMsg }),
         h(StreamersCard, { st, form, busy, actions, setMsg }),
-        h(ModeCard, { st, form, setForm, saveToggle, onAddPlan, onRemovePlan, busy, now }),
+        h(ModeCard, { st, form, setForm, saveToggle, onAddPlan, onRemovePlan, onRefresh: refresh, busy, now }),
         h(TasksCard, { st, form, setForm, saveToggle, busy }),
         h(DebugCard, { st, form, busy, onTick, onStop, onRunTask, onTestLlm, llmResult }),
         h('div', { 'data-bd-sec': '', 'data-bd-savebar': '' },

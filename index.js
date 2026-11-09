@@ -34,6 +34,7 @@ import {
   findGift,
   getGiftConfig,
   getLikePolicy,
+  getReserveList,
   getWallet,
   isRiskCode,
   sendGift,
@@ -128,6 +129,31 @@ function inWorkHours(range, ms = Date.now(), tz = 'beijing') {
   let cur = minuteOfDayInZone(ms, tz)
   if (cur < start) cur += 24 * 60
   return cur >= start && cur < end
+}
+
+
+/** 把 B站 预约记录归一成 {mid, roomId, name, title, at(ISO)}；字段名做多版本兼容 */
+function mapReserveItem(it) {
+  const o = it && typeof it === 'object' ? it : {}
+  const mid = String(o.uid ?? o.up_uid ?? o.anchor_uid ?? o.mid ?? o.upUid ?? '')
+  const roomId = String(o.room_id ?? o.roomId ?? o.real_room_id ?? o.realRoomId ?? '')
+  const name = String(o.uname ?? o.up_name ?? o.anchor_name ?? o.name ?? o.title ?? '')
+  const title = String(o.title ?? o.live_title ?? o.description ?? '')
+  const rawAt = o.start_time ?? o.startTime ?? o.live_time ?? o.begin_time ?? o.scheduled_time ?? o.stime ?? o.at ?? o.reserve_time
+  let at = NaN
+  if (typeof rawAt === 'number') at = rawAt > 1e12 ? rawAt : rawAt * 1000
+  else if (typeof rawAt === 'string' && rawAt.trim()) {
+    const n = Number(rawAt)
+    if (Number.isFinite(n)) at = n > 1e12 ? n : n * 1000
+    else at = Date.parse(rawAt)
+  }
+  return {
+    mid,
+    roomId,
+    name: name || (mid ? `主播 ${mid}` : ''),
+    title,
+    at: Number.isFinite(at) ? new Date(at).toISOString() : '',
+  }
 }
 
 function sendJson(res, code, obj) {
@@ -968,8 +994,58 @@ export function apply(ctx) {
       }
     }
 
+    if (req.method === 'GET' && path.endsWith('/reserves')) {
+      const cred = loadCred()
+      if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证（请先扫码登录）' })
+      const r = await getReserveList(cred, { page: 1, pageSize: 50 })
+      if (!r.ok) return sendJson(res, 200, { ok: false, error: describeError(r.code, r.message), code: r.code })
+      const rawList = Array.isArray(r.data?.list) ? r.data.list : []
+      const items = rawList.map(mapReserveItem).filter((x) => x.mid || x.roomId)
+      return sendJson(res, 200, {
+        ok: true,
+        count: items.length,
+        items,
+        future: items.filter((x) => x.at && Date.parse(x.at) > Date.now()).length,
+        debug: {
+          rawCount: rawList.length,
+          sampleKeys: rawList[0] && typeof rawList[0] === 'object' ? Object.keys(rawList[0]) : null,
+        },
+      })
+    }
+
     if (req.method === 'POST' && path.endsWith('/plans')) {
       const body = await readBody(req)
+      if (body.action === 'import') {
+        const items = Array.isArray(body.items) ? body.items : []
+        const plans = Array.isArray(cfg.plans) ? cfg.plans : []
+        const keyOf = (mid, at) => `${String(mid)}|${Number(at)}`
+        const seen = new Set(plans.map((p) => keyOf(p.mid, Date.parse(p.at))))
+        const now = Date.now()
+        let added = 0
+        let skipped = 0
+        for (const it of items) {
+          const mid = String(it?.mid || '').replace(/\D/g, '')
+          const at = Date.parse(String(it?.at || ''))
+          if (!mid || !Number.isFinite(at) || at <= now) { skipped += 1; continue }
+          const k = keyOf(mid, at)
+          if (seen.has(k)) { skipped += 1; continue }
+          if (plans.length >= 50) { skipped += 1; continue }
+          seen.add(k)
+          plans.push({
+            id: `plan-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+            mid,
+            name: String(it?.name || ''),
+            at: new Date(at).toISOString(),
+            createdAt: nowIso(),
+            status: 'pending',
+          })
+          added += 1
+        }
+        cfg.plans = plans
+        saveCfg()
+        log(`从预约导入计划：新增 ${added} 条，跳过 ${skipped} 条`)
+        return sendJson(res, 200, { ok: true, added, skipped, plans: cfg.plans })
+      }
       if (body.action === 'add') {
         const at = Date.parse(body.plan?.at)
         if (!Number.isFinite(at)) return sendJson(res, 200, { ok: false, error: '时间格式不对' })
