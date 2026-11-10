@@ -909,14 +909,14 @@ select[data-bd-input]{cursor:pointer;}
           note: '每行一条，最多 20 行，每条不超过 20 字；重复行会被自动去掉。条数不够时循环使用。',
         }),
         h(ToggleRow, {
-          label: 'AI 智能弹幕', note: '跟风复读（默认）：读窗口内弹幕流，复制正在被刷屏的那一句；自由生成：按直播内容自己写。模型不可用时跟风模式退回本地计数。',
-          on: form.aiDanmaku !== false, onChange: (v) => saveToggle('aiDanmaku', v, v ? '已开启 AI 弹幕' : '已关闭 AI 弹幕'), disabled: saving,
+          label: '智能弹幕（跟风复读 / 自由生成）', note: '跟风复读（默认）纯本地统计，不调用模型：取窗口内重复最多的一句原样复制；自由生成才调用模型。',
+          on: form.aiDanmaku !== false, onChange: (v) => saveToggle('aiDanmaku', v, v ? '已开启智能弹幕' : '已关闭智能弹幕'), disabled: saving,
         }),
         h(SelectField, {
-          label: 'AI 弹幕模式', value: form.aiMode,
+          label: '弹幕模式', value: form.aiMode,
           onChange: (v) => setForm((f) => ({ ...f, aiMode: v })),
-          options: optionPairs([['follow', '跟风复读（默认）：复制窗口内刷屏最多的一句'], ['generate', '自由生成：按直播内容自己写一句']]),
-          note: '跟风复读用 LLM 在候选里挑「大家正在跟着刷」的那句原样复制；选中结果必须在候选里（防止模型瞎编）。',
+          options: optionPairs([['follow', '跟风复读（默认，本地统计，不调用模型）'], ['generate', '自由生成（调用模型，按直播内容写一句）']]),
+          note: '跟风复读：窗口内出现次数最多、且 ≥ 最少重复次数的那句直接原样发送；同频次取最近出现的。全部本地完成，不消耗 token、不依赖模型。',
         }),
         form.aiMode === 'follow'
           ? h(FieldGrid, null,
@@ -931,12 +931,12 @@ select[data-bd-input]{cursor:pointer;}
           : null,
         h(FieldGrid, null,
           h(NumField, {
-            label: 'AI 弹幕间隔', unit: '秒', min: 30, max: 600, value: form.aiIntervalSec,
+            label: '智能弹幕间隔', unit: '秒', min: 30, max: 600, value: form.aiIntervalSec,
             onChange: (v) => setForm((f) => ({ ...f, aiIntervalSec: v })), note: '范围 30–600 秒，默认 300 秒（越短越容易被风控）',
           }),
           h(NumField, {
-            label: '每房每日 AI 上限', unit: '条', min: 10, max: 300, value: form.aiDailyMax,
-            onChange: (v) => setForm((f) => ({ ...f, aiDailyMax: v })), note: '范围 10–300 条，默认 100 条',
+            label: '每房每日智能弹幕上限', unit: '条', min: 10, max: 300, value: form.aiDailyMax,
+            onChange: (v) => setForm((f) => ({ ...f, aiDailyMax: v })), note: '范围 10–300 条，默认 100 条；跟风模式不消耗 token',
           })),
         h(Sub, null, '弹幕上限与限速（风控兜底）'),
         h(FieldGrid, null,
@@ -1015,7 +1015,7 @@ select[data-bd-input]{cursor:pointer;}
         h(Note, null, '家目录：' + (st.home || '—')),
         h(Note, null, '模型：' + (llm.available
           ? `${llm.provider || '?'} / ${llm.model || '?'} / 推理 ${llm.reasoningEffort || '默认'}`
-          : '宿主没有提供 llm 服务，AI 弹幕会静默跳过（问候模板仍会完成每日弹幕任务）')))
+          : '宿主没有提供 llm 服务：跟风复读不受影响；仅自由生成会静默跳过（问候模板仍会完成每日弹幕任务）')))
     }
 
     /* ────────────────────────── 整页 ────────────────────────── */

@@ -601,10 +601,10 @@ export function apply(ctx) {
     }
   }
 
-  /* ── AI 弹幕（两种模式） ──
-   * follow  （默认）跟风复读：LLM 读时间窗口内的弹幕流，挑「正在被刷屏」的那一句原样复制；
-   *           模型不可用/没挑出来时，用本地计数兜底（窗口内出现次数 ≥ aiFollowMinCount）。
-   * generate         自由生成：根据房间标题 + 最近弹幕自己写一句。
+  /* ── 智能弹幕（两种模式） ──
+   * follow  （默认）跟风复读：纯本地统计，不调用模型。取时间窗口内出现次数最多、
+   *           且达到 aiFollowMinCount 的原句，原样复制；没有明显刷屏就不发。
+   * generate         自由生成：根据房间标题 + 最近弹幕让 LLM 写一句（仅此模式需要模型）。
    */
   function aiCountOf(realRoomId) { return Number(rt.aiSent[realRoomId]) || 0 }
 
@@ -635,49 +635,31 @@ export function apply(ctx) {
     return out
   }
 
-  /** 本地计数：窗口内出现次数最多、且达到阈值的文本（LLM 不可用/没挑出来时兜底） */
+  /** 本地计数：窗口内出现次数最多的文本；同频次优先取最近一次出现的（更贴近当下正在刷的那句） */
   function localFollowTop(messages, minCount = cfg.aiFollowMinCount) {
-    const counts = new Map()
-    for (const text of messages) counts.set(text, (counts.get(text) || 0) + 1)
-    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1])
+    const stats = new Map()
+    for (let i = 0; i < messages.length; i++) {
+      const text = messages[i]
+      const cur = stats.get(text)
+      if (cur) { cur.count += 1; cur.lastIndex = i }
+      else stats.set(text, { text, count: 1, lastIndex: i })
+    }
+    const sorted = [...stats.values()].sort((a, b) => b.count - a.count || b.lastIndex - a.lastIndex)
     const top = sorted[0] || null
     return {
       total: messages.length,
-      top: sorted.slice(0, 8).map(([text, count]) => ({ text, count })),
-      text: top && top[1] >= Math.max(2, minCount) ? top[0] : '',
-      count: top ? top[1] : 0,
+      top: sorted.slice(0, 8).map(({ text, count }) => ({ text, count })),
+      text: top && top.count >= Math.max(2, minCount) ? top.text : '',
+      count: top ? top.count : 0,
     }
   }
 
-  /** 跟风复读：让 LLM 在候选里挑「正在被刷屏、最适合跟」的一句；校验不通过就本地兜底 */
-  async function generateFollowDanmaku(extraMessages = null) {
+  /** 跟风复读：纯本地统计（不调用模型），取窗口内出现次数最多且达到阈值的原句 */
+  function pickFollowDanmaku(extraMessages = null) {
     const stat = localFollowTop(followWindowMessages(Date.now(), cfg.aiFollowWindowMs, extraMessages))
     if (stat.total < 3) return { text: '', stat, why: '窗口内弹幕太少' }
-    if (llm.available && stat.top.length) {
-      const lines = stat.top.map((x) => `${x.count}× 「${x.text}」`).join('\n')
-      const prompt = [
-        `你在 B站 直播间里当观众。下面是最近 ${Math.round(cfg.aiFollowWindowMs / 1000)} 秒弹幕的统计（格式：出现次数× 原文）：`,
-        lines,
-        '',
-        '请挑出「当前大家正在跟着刷」的那一句，原样输出它的文本（不要加次数、不要加引号、不要解释、不要修改字符）。',
-        `只有在窗口内重复 ≥${cfg.aiFollowMinCount} 次、且明显是在跟风刷屏时才输出；否则只输出 NONE。`,
-        '不要输出 @ 任何人、不要输出链接或广告。只输出一句话或 NONE。',
-      ].join('\n')
-      const raw = await llm.generate({
-        prompt,
-        // 思考模型会先花 reasoning token；低推理强度下 1000 足够，实际输出仍被 maxLen 截断。
-        maxTokens: 1000,
-        timeoutMs: 30000,
-        onError: (e) => log(`跟风弹幕没接上模型：${String(e?.message || e)}`),
-      })
-      const pick = normalizeChatText(raw)
-      if (pick && pick !== 'NONE' && pick.length <= Math.max(20, cfg.maxLen)) {
-        const hit = stat.top.find((x) => x.text === pick)
-        if (hit && hit.count >= Math.max(2, cfg.aiFollowMinCount)) return { text: pick, stat, why: `LLM 选中（${hit.count} 次）` }
-        log(`跟风弹幕：模型返回「${pick}」但不在候选里，改用本地计数`)
-      }
-    }
-    return { text: stat.text, stat, why: stat.text ? `本地计数（${stat.count} 次）` : '没有明显刷屏' }
+    if (!stat.text) return { text: '', stat, why: '没有达到阈值的刷屏弹幕' }
+    return { text: stat.text, stat, why: `本地计数最高（${stat.count} 次）` }
   }
 
   /** 自由生成：根据房间标题 + 最近弹幕自己写一句（旧逻辑，保留作可选模式） */
@@ -719,7 +701,7 @@ export function apply(ctx) {
     rt.lastAiAt = Date.now()
     let clipped = ''
     if (follow) {
-      const r = await generateFollowDanmaku()
+      const r = pickFollowDanmaku()
       clipped = r.text
       if (!clipped) { log(`跟风弹幕跳过：${r.why}`); return }
       log(`跟风弹幕候选：${r.stat.top.slice(0, 3).map((x) => `${x.text}×${x.count}`).join(' / ')}；选择「${clipped}」（${r.why}）`)
@@ -727,7 +709,7 @@ export function apply(ctx) {
       clipped = await generateAiDanmaku()
       if (!clipped) { log('AI 弹幕生成空结果（本轮跳过）'); return }
     }
-    if (rt.lastAiText && rt.lastAiText === clipped) { log(`跟风弹幕与上次相同，跳过：「${clipped}」`); return }
+    if (rt.lastAiText && rt.lastAiText === clipped) { log(`智能弹幕与上次相同，跳过：「${clipped}」`); return }
     const r2 = await sendChat(m, clipped, follow ? '跟风弹幕' : 'AI 弹幕')
     if (r2.ok) {
       rt.aiSent[m.realRoomId] = aiCountOf(m.realRoomId) + 1
@@ -1547,10 +1529,11 @@ export function apply(ctx) {
       const mode = cfg.aiDanmakuMode === 'generate' ? 'generate' : 'follow'
       const t0 = Date.now()
       if (mode === 'follow') {
-        const r = await generateFollowDanmaku(samples)
+        const r = pickFollowDanmaku(samples)
         return sendJson(res, 200, {
           ok: Boolean(r.text),
           mode,
+          source: 'local',
           text: r.text,
           why: r.why,
           windowSec: Math.round(cfg.aiFollowWindowMs / 1000),

@@ -2,9 +2,9 @@
  * scripts/test-ai-follow.mjs —— 本地验证「跟风复读」逻辑（不依赖 DSH 运行时）
  * 用法：node scripts/test-ai-follow.mjs
  * 用假 ctx + 假 LLM 调 apply()，再通过注册的 /api/bili-duty/ai-test 路由跑样例。
+ * v1.11.2 起跟风复读改为纯本地统计：本测试同时断言「不调用模型」。
  */
 import { mkdirSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
 
 const HOME = '/tmp/bili-duty-ai-test'
 rmSync(HOME, { recursive: true, force: true })
@@ -12,19 +12,20 @@ mkdirSync(HOME, { recursive: true })
 
 let handler = null
 let cleanup = null
+let llmCalls = 0
 
-// 假 LLM：prepareCall 后流式吐一句话（模拟思考模型返回）
-function mockLlm(streamText) {
+// 假 LLM：任何调用都算失败——跟风复读不应走到这里
+function mockLlm() {
   return {
     listProviders: () => [{ id: 'mock-provider', name: 'Mock' }],
-    prepareCall: async () => ({
-      config: { provider: 'mock-provider', model: 'mock-model' },
-      stream: async function* stream() { yield { type: 'text-delta', text: streamText } },
-    }),
+    prepareCall: async () => {
+      llmCalls += 1
+      throw new Error('跟风复读不应调用模型')
+    },
   }
 }
 
-function makeCtx(streamText) {
+function makeCtx() {
   const ctx = {
     webServer: {
       register: (opts) => { handler = opts.handler; return () => { handler = null } },
@@ -36,7 +37,7 @@ function makeCtx(streamText) {
     },
     get: (name) => {
       if (name === 'dshHomePath') return () => HOME
-      if (name === 'llm') return mockLlm(streamText)
+      if (name === 'llm') return mockLlm()
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'mock-provider', model: 'mock-model' }) }
       if (name === 'attachments') return null
       return null
@@ -65,30 +66,60 @@ function callRoute(body) {
   })
 }
 
-const samples1 = ['好好好', '好好好', '好好好', '好好好', '好好好', '飞飞飞', '飞飞飞', '飞飞飞', '?', '?', '主播好棒', '666', '666']
-const samples2 = ['好好好', '好好好', '好好好', '好好好', '好好好', '飞飞飞', '飞飞飞', '飞飞飞', '?', '?']
-const samples3 = ['主播今天状态不错', '这首歌好听', '来了', '晚上好', '哈哈哈哈'] // 没有明显刷屏
+const cases = [
+  {
+    label: '最高频胜出',
+    samples: ['好好好', '好好好', '好好好', '好好好', '好好好', '飞飞飞', '飞飞飞', '飞飞飞', '?', '?', '主播好棒', '666', '666'],
+    expect: '好好好',
+  },
+  {
+    label: '同频次取最近出现的那句',
+    samples: ['飞飞飞', '飞飞飞', '飞飞飞', '好好好', '好好好', '好好好'],
+    expect: '好好好',
+  },
+  {
+    label: '过滤广告/加群后按剩余统计',
+    samples: ['加群 123 抽奖', '好好好', '好好好', '好好好', '飞飞飞'],
+    expect: '好好好',
+  },
+  {
+    label: '没有刷屏时不发',
+    samples: ['主播今天状态不错', '这首歌好听', '来了', '晚上好', '哈哈哈哈'],
+    expect: '',
+  },
+  {
+    label: '窗口内弹幕太少时不发',
+    samples: ['好好好', '好好好'],
+    expect: '',
+  },
+  {
+    label: '低于最少重复次数时不发',
+    samples: ['好好好', '好好好', '飞飞飞', '飞飞飞', '来了', '晚上好'],
+    expect: '',
+  },
+]
 
-async function runOnce(streamText, samples, label) {
+async function runOnce(samples, label) {
   const { apply } = await import('../index.js?test=' + Math.random())
   handler = null
   cleanup = null
-  apply(makeCtx(streamText))
+  llmCalls = 0
+  apply(makeCtx())
   await new Promise((r) => setTimeout(r, 30))
   if (!handler) throw new Error('没注册到 /api/bili-duty 路由')
   const out = await callRoute({ samples })
-  console.log(`\n[${label}] LLM 返回「${streamText}」，本地候选：`)
+  console.log(`\n[${label}]`)
   console.log('  local.top =', JSON.stringify(out.local?.top))
-  console.log('  → 选择:', JSON.stringify(out.text), '| why:', out.why, '| mode:', out.mode)
+  console.log('  → 选择:', JSON.stringify(out.text), '| why:', out.why, '| source:', out.source, '| llmCalls:', llmCalls)
   if (typeof cleanup === 'function') cleanup()
+  if (llmCalls !== 0) throw new Error(`跟风复读不应调用模型，实际调用 ${llmCalls} 次`)
   return out
 }
 
-const a = await runOnce('好好好', samples1, 'LLM 选对')
-if (a.text !== '好好好') throw new Error('LLM 正确选择时应当返回 好好好')
-const b = await runOnce('主播今天状态不错', samples2, 'LLM 乱填（应回落本地）')
-if (b.text !== '好好好') throw new Error('LLM 返回不在候选里时应回落本地 top=好好好')
-const c = await runOnce('NONE', samples3, '没有刷屏（应返回空）')
-if (c.text !== '') throw new Error('没有明显刷屏时不应发送')
-console.log('\n=== 全部通过 ===')
+for (const c of cases) {
+  const out = await runOnce(c.samples, c.label)
+  if (out.text !== c.expect) throw new Error(`[${c.label}] 期望 ${JSON.stringify(c.expect)}，实际 ${JSON.stringify(out.text)}`)
+  if (out.source !== 'local') throw new Error(`[${c.label}] source 应为 local，实际 ${out.source}`)
+}
+console.log('\n=== 全部通过（6 个用例，0 次模型调用） ===')
 process.exit(0)
