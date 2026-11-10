@@ -46,6 +46,7 @@ import { DanmakuClient, getRoomByUid, getRoomInfo, sendDanmaku } from './lib/liv
 import { generateQr, pollQr, qrSvg, whoAmI } from './lib/auth.mjs'
 import { makeLlm } from './lib/llm.mjs'
 import { prunePlans, rotateLogIfNeeded } from './lib/duty-clean.mjs'
+import { ATTACH_KEEP_DAYS, readTrack, sweepPluginAttachments, trackPath, trackSavedAttachment } from './lib/duty-attach.mjs'
 
 export const name = 'bili-duty'
 export const inject = ['webServer']
@@ -59,6 +60,7 @@ const TASK_SWEEP_MS = 5 * 60_000 // 巡视其它主播补任务
 const PLAN_PRE_MS = 10 * 60_000 // 手动计划提前 10 分钟进房
 const PLAN_GRACE_MS = 10 * 60_000 // 到点未开播最多再等 10 分钟
 const RISK_PAUSE_MS = 10 * 60_000 // 风控后暂停互动任务
+const RUNTIME_SWEEP_MS = 6 * 3600_000 // 运行时文件清理（附件/tmp）每 6 小时一轮
 
 /* ────────────────────────── 小工具 ────────────────────────── */
 
@@ -306,6 +308,10 @@ export function apply(ctx) {
     lastAliveCheckAt: 0,
     lastSweepAt: 0,
     lastPlansPruneAt: 0,
+    lastRuntimeSweepAt: 0,
+    runtimeSweepBusy: false,
+    runtime: null, // 最近一次运行时清理结果
+    lastAttachTrack: null, // 最近一次图片附件跟踪结果（调试用）
     nextAutoCheckAt: 0,
     pausedUntil: 0,
     lastError: '',
@@ -317,6 +323,42 @@ export function apply(ctx) {
   }
 
   const logErr = (msg) => { rt.lastError = String(msg || ''); log(rt.lastError) }
+
+  /* ── 运行时文件清理（插件自己写入的图片附件 + tmp） ── */
+  const fmtBytes = (n) => {
+    const v = Number(n) || 0
+    if (v < 1024) return `${v}B`
+    if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)}KB`
+    return `${(v / 1024 / 1024).toFixed(1)}MB`
+  }
+
+  async function sweepRuntime() {
+    if (rt.runtimeSweepBusy) return rt.runtime
+    rt.runtimeSweepBusy = true
+    try {
+      const now = Date.now()
+      const stats = sweepPluginAttachments({ home, dshHome: dirname(home), now })
+      rt.lastRuntimeSweepAt = now
+      rt.runtime = stats
+      if (stats.deleted || stats.referenced || stats.deferred || stats.tmpRemoved || stats.invalid) {
+        const parts = []
+        if (stats.deleted) parts.push(`删除图片附件 ${stats.deleted} 个（${fmtBytes(stats.bytesFreed)}）`)
+        if (stats.referenced) parts.push(`保留 ${stats.referenced} 个仍被会话引用`)
+        if (stats.deferred) parts.push(`${stats.deferred} 个待下轮（会话扫描不完整）`)
+        if (stats.invalid) parts.push(`忽略 ${stats.invalid} 个失效记录`)
+        if (stats.tmpRemoved) parts.push(`清理临时文件 ${stats.tmpRemoved} 个（${fmtBytes(stats.tmpBytes)}）`)
+        log(`运行时清理：${parts.join('，')}；附件保留 ${ATTACH_KEEP_DAYS} 天`)
+      }
+      return rt.runtime
+    } catch (e) {
+      logErr(`运行时清理失败：${String(e?.message || e)}`)
+      return null
+    } finally {
+      rt.runtimeSweepBusy = false
+    }
+  }
+  // 启动先清一轮（上次崩溃留下的 tmp / 过期的插件图片附件）
+  void sweepRuntime().catch(() => {})
 
   /* ── 主播列表 / 开播状态 ── */
   const enabledStreamers = () => cfg.streamers.filter((s) => s.enabled !== false)
@@ -832,7 +874,15 @@ export function apply(ctx) {
         const ct = String(r.headers.get('content-type') || '').split(';')[0].trim()
         const mediaType = /^image\/(jpeg|png|webp|gif)$/.test(ct) ? ct : 'image/jpeg'
         const ref = await att.saveImage({ data: new Uint8Array(buf), mediaType, name: 'dynamic-image.jpg' })
-        if (ref) refs.push(ref)
+        if (ref) {
+          refs.push(ref)
+          // 记录「本插件新建」的图片附件，保留 7 天后由 sweepRuntime 保守回收；
+          // 内容去重命中的旧对象（可能是用户聊天附件）不会进入跟踪表。
+          try {
+            const hostPath = typeof att.imageHostPath === 'function' ? att.imageHostPath(ref) : ''
+            rt.lastAttachTrack = trackSavedAttachment({ home, ref, hostPath })
+          } catch { /* 跟踪失败不影响识图 */ }
+        }
       } catch { /* 单张失败不影响其它 */ }
     }
     return { refs, error: refs.length ? '' : '图片拉取或转附件失败' }
@@ -1060,6 +1110,8 @@ export function apply(ctx) {
         }
       }
       if (now - rt.lastLiveRefreshAt > LIVE_REFRESH_MS) await refreshLive()
+      // 运行时文件清理：跨日或每 6 小时一轮（图片附件保留 7 天；tmp 文件 6 小时）
+      if (rolled || now - rt.lastRuntimeSweepAt > RUNTIME_SWEEP_MS) void sweepRuntime().catch(() => {})
       await processPlans()
       if (now - rt.lastAutoCheckAt >= AUTO_CHECK_MS) {
         rt.lastAutoCheckAt = now
@@ -1160,8 +1212,37 @@ export function apply(ctx) {
         danmakuStatus: rt.danmakuStatus,
         logs: logs.slice(-cfg.logMaxLines),
         lastError: rt.lastError,
+        runtime: rt.runtime ? {
+          at: rt.runtime.at,
+          keepDays: rt.runtime.keepDays || ATTACH_KEEP_DAYS,
+          tracked: readTrack(trackPath(home)).length,
+          deleted: rt.runtime.deleted,
+          bytesFreed: rt.runtime.bytesFreed,
+          referenced: rt.runtime.referenced,
+          deferred: rt.runtime.deferred,
+          tmpRemoved: rt.runtime.tmpRemoved,
+          tmpBytes: rt.runtime.tmpBytes,
+        } : null,
         state: { day: beijingDateKey(), pausedUntil: rt.pausedUntil },
       })
+    }
+
+    if (req.method === 'GET' && path.endsWith('/runtime')) {
+      return sendJson(res, 200, {
+        ok: true,
+        home,
+        dshHome: dirname(home),
+        keepDays: ATTACH_KEEP_DAYS,
+        tracked: readTrack(trackPath(home)).length,
+        last: rt.runtime || null,
+      })
+    }
+
+    if (req.method === 'POST' && path.endsWith('/runtime')) {
+      const body = await readBody(req)
+      if (String(body.action || '') !== 'sweep') return sendJson(res, 200, { ok: false, error: '不支持的 action' })
+      const result = await sweepRuntime()
+      return sendJson(res, 200, { ok: Boolean(result), result, tracked: readTrack(trackPath(home)).length })
     }
 
     if (req.method === 'POST' && path.endsWith('/config')) {

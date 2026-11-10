@@ -33,14 +33,14 @@ dsh plugin --profile web add link:/绝对路径/dsh-bili-duty
 dsh plugin --profile web add github:你的用户名/dsh-bili-duty
 ```
 
-装完刷新 DSH 页面，进入「设置 → 直播值守」：
+装完刷新 DSH 页面，点左侧栏「直播值守」进入控制面板：
 
 1. **扫码登录** B 站账号（插件自己存一份凭证，不借用别的插件）；
 2. **添加 5 个主播**：填 UID，点「查询」自动补昵称/房间号；
 3. 需要的话打开「打赏」开关（默认关），其余参数保持默认即可；
 4. 在「值守模式」里决定自动值守还是手动计划。
 
-插件家目录：`~/.dsh/bili-duty/`（config/state/credential/日志），**凭证与状态文件不要提交到任何仓库**。
+插件家目录：`~/.dsh/bili-duty/`（config/state/credential/日志/附件跟踪），**凭证与状态文件不要提交到任何仓库**。识图产生的图片会写进 DSH 共享附件库（`~/.dsh/attachments/v1`），插件只回收「自己新建且 7 天内未被任何会话引用」的对象；详见「运行时文件与自动清理」。
 
 ## 两种值守模式
 
@@ -85,6 +85,23 @@ B站 的「已预约」列表接口读不到观众侧数据（实测 `GetReserve
 | 点赞 | `POST /xlive/app-ucenter/v1/like_info_v3/like/likeReportV3` | 房间下发 `report_click_limit=15`、`report_time_min=5s`，300 次 = 20 批 × 15 |
 | 打赏 | `POST /xlive/revenue/v2/gift/sendGoldMultiUser` | 1 电池「粉丝团灯牌」成功；参数中 `uid` 必须是送礼人自己 |
 
+## 运行时文件与自动清理
+
+插件自己会写的东西只有两类，都有硬上限 / 自动回收：
+
+| 位置 | 内容 | 回收策略 |
+| --- | --- | --- |
+| `~/.dsh/bili-duty/live.log` | 运行日志 | 超过 512KB 自动轮转，只留最后 400 行（v1.10.0） |
+| `~/.dsh/bili-duty/config.json` / `state.json` / `credential.json` | 配置、每日状态、凭证 | 不增长；写入走「临时文件 + rename」，启动时清掉残留 `*.tmp` |
+| `~/.dsh/bili-duty/attachments.json` | 插件识图附件的跟踪表 | 只记录插件「新建」的图片，最多 500 条，每轮 sweep 重写 |
+| `~/.dsh/attachments/v1/objects/...` | 识图时保存的动态图片（DSH 共享附件库） | 保留 7 天；删除前用 size+sha256 校验原对象，并扫描 DSH 会话日志（zstd）确认没有被引用；被引用就永久保留并移出跟踪表；扫描不完整则本轮整体跳过，宁可不删 |
+| `~/.dsh/attachments/v1/tmp` | 附件库临时文件 | 超过 6 小时自动清理 |
+
+- 触发时机：插件启动时一次、之后每 6 小时或跨日一次；只有真的发生了清理/保留动作才写日志。
+- 手动入口：控制面板「调试 → 运行时文件清理 → 立即清理」；接口 `POST /api/bili-duty/runtime {action:'sweep'}`，`GET /api/bili-duty/runtime` 可查看上次结果与跟踪数量。
+- 共享附件库按 sha256 内容去重。保存图片时如果对象已存在（可能是用户自己聊天的附件），插件不会把它加入跟踪表，因此不会删除这类共享对象。会话日志扫描器解析不了的压缩文件会让整轮 `deferred`，下一轮再试。
+- `.probe/` 是开发期探针目录（gitignored），不属于运行时；开发完可 `rm -rf .probe`。
+
 ## 风险提示（务必阅读）
 
 - 自动点赞 / 发弹幕 / 送礼属于对平台的**非官方自动化操作**，可能违反 B 站 用户协议，存在被限流、验证码、甚至封号的风险；本插件只在**你自己的账号**上、按你的配置执行，风险自担。
@@ -95,11 +112,12 @@ B站 的「已预约」列表接口读不到观众侧数据（实测 `GetReserve
 
 ```
 index.js              宿主端：调度/主看房/每日任务/HTTP 路由/DSH 生命周期
-client.js             浏览器端：设置页（自注册模块）
+client.js             浏览器端：主界面侧栏面板（自注册模块）
 lib/duty-config.mjs   配置默认值与清洗（29 项）
 lib/duty-state.mjs    每日任务状态（北京自然日、原子写）
 lib/duty-actions.mjs  B站动作适配器（进房/点赞/礼物/钱包/粉丝牌/送礼）
 lib/duty-trace.mjs    观看任务：live-trace E/X 心跳上报（WBI + HMAC 链式签名）
+lib/duty-attach.mjs   运行时清理：插件识图附件的跟踪/保守回收、tmp 清理
 lib/duty-watch.mjs    拉流工具（观看计时已改走 duty-trace；仅 scripts/probe.mjs 复用 getPlayUrl）
 lib/live.mjs          原插件保留：房间查询、弹幕长连接、发弹幕
 lib/auth.mjs          扫码登录
@@ -107,12 +125,13 @@ lib/llm.mjs           自由生成弹幕 / 动态识别（跟风复读不调用�
 vendor/qrcode.js      登录二维码（MIT）
 scripts/probe.mjs     技术探针（登录/房间/点赞/礼物/拉流，排障用）
 scripts/test-trace.mjs 观看上报单元测试（假 fetch，不碰网络）
+scripts/test-attach-clean.mjs 附件清退单测（28 项，临时目录 + 假会话）
 docs/                 设计文档与原插件解读笔记
 ```
 
 ## 开发
 
-插件零依赖、无构建。改完宿主端代码后重启 DSH（或触发 profile 重载）；改 `client.js` 后刷新页面。
+插件零依赖、无构建。改完宿主端代码后刷新页面即可（DSH HMR 会重挂）；改 `client.js` 后刷新页面。
 
 ```bash
 node --check index.js
@@ -120,6 +139,7 @@ node --check lib/duty-actions.mjs
 node scripts/probe.mjs help     # 探针需要扫码登录，凭证只写本机
 node scripts/test-trace.mjs    # 观看上报（live-trace E/X）：假 fetch 单测
 node scripts/test-clean.mjs    # 日志轮转/计划裁剪
+node scripts/test-attach-clean.mjs  # 附件保守回收（28 项断言）
 node scripts/test-card-parse.mjs  # 预约卡片/时间解析
 node scripts/test-client-register.mjs  # client 注册槽位冒烟
 ```

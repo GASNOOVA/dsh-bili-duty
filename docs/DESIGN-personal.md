@@ -481,3 +481,22 @@
 - 测试：`scripts/test-ai-follow.mjs` 改为 mock LLM「一调用就抛错」，覆盖 6 个用例（最高频胜出、同频次取最近、广告过滤、无刷屏不发、窗口太短不发、低于阈值不发），断言 0 次模型调用。
 - UI：设置页文案改为「智能弹幕（跟风复读 / 自由生成）」，明确跟风模式纯本地、0 token；调试区 LLM 缺失提示改为「跟风复读不受影响」。
 - 真机：HMR 重挂后版本 1.11.2-personal.0；下次开播房间日志会打印「跟风弹幕候选：…；选择「…」（本地计数最高（N 次））」。
+
+## 18. v1.11.3 运行时文件自动清理（2026-11-10）
+
+- 动因：用户 m01189「查看该插件运行时生成的临时文件目录，为它增加自动清退机制避免无限占用服务器硬盘空间」。审计发现：插件家目录只有 80KB（config 5KB / state / credential / live.log），日志与计划在 v1.10.0 已轮转；唯一可能无限增长的是**识图写入 DSH 共享附件库的图片**（`~/.dsh/attachments/v1/objects/<sha[0:2]>/<sha>`），而 DSH 0.2.2 的附件本地存储没有删除接口、也没有回收策略（`dsh-attachment/lib/index.js:226` 注释）。`~/.dsh/sessions`（31MB）是 DSH 会话日志，不属于插件，不碰。
+- 约束：附件库是**全局内容寻址 + sha256 去重**的，同一张图可能同时是用户自己聊天的附件（例如用户转发过的日程表图）。直接删对象可能让历史消息里的图片失效，所以必须非常保守。
+- 实现（`lib/duty-attach.mjs`）：
+  - `trackSavedAttachment`：每次 `saveImage` 成功后记录 ref/路径；若对象在保存前已存在（mtime 明显早于保存时刻——说明命中去重、可能是用户已有附件），标记 `shared:true`，**不进入跟踪表**。
+  - 跟踪表 `~/.dsh/bili-duty/attachments.json`：只含插件自己新建的对象；写入走临时文件+rename，最多 500 条（超出按时间淘汰最旧）。
+  - `sweepPluginAttachments`（默认保留 7 天）：
+    1. 从附件库对象目录中找出「到期且被跟踪」的对象；
+    2. 重新计算 size+sha256，和跟踪记录不一致就丢弃记录、不动文件；
+    3. 扫描 `~/.dsh/sessions/**/session*.jsonl[.zstd]`，解压后搜 `sha256:<hex>`；命中 = 仍被会话引用 → 永久保留并移出跟踪表；
+    4. 扫描目录不存在 / 超过 64MB 预算 / 解压失败 → `incomplete:true`，本轮整体 **deferred**，不删任何东西，下一轮再试；
+    5. 通过校验且无引用的对象才删除，累计 `deleted/bytesFreed`；
+    6. 同时清 `~/.dsh/attachments/v1/tmp`（>6 小时）和插件家目录 `*.tmp`。
+  - 触发：插件启动一次、心跳每 6 小时或跨日一次；只有发生动作才写日志「运行时清理：…」。
+  - 接口：`GET /api/bili-duty/runtime`、`POST /api/bili-duty/runtime {action:'sweep'}`；控制面板「调试 → 运行时文件清理 → 立即清理」。
+- 测试：`scripts/test-attach-clean.mjs` 28 项断言全过（共享对象不跟踪、跟踪幂等、保留期内不删、过期删除、会话引用保护、size/sha 不一致、超预算延后、跟踪上限淘汰、tmp 清理、明文/zstd 会话扫描、坏跟踪文件容错）。
+- 手动清理：删掉工作区开发探针 `.probe/`（4.8MB，gitignored）；附件库里本次会话 read_image 生成的 11 个缩略图未删（属于会话引用，留给 DSH 未来回收策略）。

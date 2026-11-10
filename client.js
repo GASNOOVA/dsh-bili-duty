@@ -150,6 +150,12 @@ select[data-bd-input]{cursor:pointer;}
       return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分'
     }
     const fmtClock = (ts) => { const d = new Date(ts); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) }
+    const fmtBytes = (n) => {
+      const v = Math.max(0, Number(n) || 0)
+      if (v < 1024) return v + ' B'
+      if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB'
+      return (v / 1024 / 1024).toFixed(1) + ' MB'
+    }
     const fmtPlanTime = (iso) => {
       const ts = Date.parse(iso)
       if (!Number.isFinite(ts)) return String(iso || '—')
@@ -975,7 +981,7 @@ select[data-bd-input]{cursor:pointer;}
     }
 
     /* ────────────────────────── ⑥ 调试 ────────────────────────── */
-    function DebugCard({ st, form, busy, onTick, onStop, onRunTask, onTestLlm, llmResult }) {
+    function DebugCard({ st, form, busy, onTick, onStop, onRunTask, onTestLlm, onRuntimeSweep, llmResult }) {
       const [mid, setMid] = React.useState('')
       const [task, setTask] = React.useState('all')
       const streamers = (st.streamers && st.streamers.length ? st.streamers : form.streamers) || []
@@ -1009,7 +1015,13 @@ select[data-bd-input]{cursor:pointer;}
             disabled: busy === 'task' || !midValue,
             onClick: () => onRunTask(midValue, task),
           }, busy === 'task' ? '执行中…' : '运行')),
-        h(Note, null, '手动任务会立刻在你选的直播间执行一次（观看 = 拉流几分钟），可能触发平台风控，请谨慎使用。'),
+        h(Note, null, '手动任务会立刻在你选的直播间执行一次（观看 = 上报 15 分钟观看心跳，可能触发平台风控，请谨慎使用）。'),
+        h(Sub, null, '运行时文件清理'),
+        h(Note, null, st.runtime
+          ? `上次清理：${fmtClock(st.runtime.at)} · 跟踪插件图片 ${st.runtime.tracked} 个 · 删除 ${st.runtime.deleted} 个（${fmtBytes(st.runtime.bytesFreed)}）· 保留被会话引用 ${st.runtime.referenced} 个 · 清理临时文件 ${st.runtime.tmpRemoved} 个 · 图片附件保留 ${st.runtime.keepDays} 天`
+          : '插件启动后与每 6 小时自动清理一次；插件识图写入的图片附件保留 7 天，被会话引用的永不删除。'),
+        h(Row, null,
+          h('button', { 'data-bd-btn': '', disabled: busy === 'runtime', onClick: onRuntimeSweep }, busy === 'runtime' ? '清理中…' : '立即清理')),
         h(Sub, null, '运行日志'),
         h('pre', { 'data-bd-log': '' }, (st.logs || []).join('\n') || '（还没有日志）'),
         h(Note, null, '家目录：' + (st.home || '—')),
@@ -1177,6 +1189,19 @@ select[data-bd-input]{cursor:pointer;}
           else setLlmResult({ tone: 'warn', text: '模型不可用：' + (r.error || '空回复') })
         } catch (e) { setLlmResult({ tone: 'warn', text: '测试失败：' + errText(e) }) } finally { setBusy('') }
       }
+      const onRuntimeSweep = async () => {
+        setBusy('runtime')
+        try {
+          const r = await jpost('/runtime', { action: 'sweep' })
+          if (!r.ok) throw new Error(r.error || '清理失败')
+          const x = r.result || {}
+          setMsg({
+            tone: 'good',
+            text: `运行时清理完成：删除图片附件 ${x.deleted || 0} 个（${fmtBytes(x.bytesFreed || 0)}），保留被会话引用 ${x.referenced || 0} 个，清理临时文件 ${x.tmpRemoved || 0} 个（跟踪 ${r.tracked || 0} 个）`,
+          })
+          refresh()
+        } catch (e) { setMsg({ tone: 'warn', text: '清理失败：' + errText(e) }) } finally { setBusy('') }
+      }
       const onAddPlan = async (mid, atLocal) => {
         if (!mid) { setMsg({ tone: 'warn', text: '先选择要计划的主播' }); return false }
         if (!atLocal) { setMsg({ tone: 'warn', text: '先选择计划开播时间' }); return false }
@@ -1231,7 +1256,7 @@ select[data-bd-input]{cursor:pointer;}
         h(StreamersCard, { st, form, busy, actions, setMsg }),
         h(ModeCard, { st, form, setForm, saveToggle, onAddPlan, onRemovePlan, onRefresh: refresh, busy, now }),
         h(TasksCard, { st, form, setForm, saveToggle, busy }),
-        h(DebugCard, { st, form, busy, onTick, onStop, onRunTask, onTestLlm, llmResult }),
+        h(DebugCard, { st, form, busy, onTick, onStop, onRunTask, onTestLlm, onRuntimeSweep, llmResult }),
         h('div', { 'data-bd-sec': '', 'data-bd-savebar': '' },
           h('div', { 'data-bd-h': '' }, '保存'),
           h('div', { 'data-bd-note': '' }, '输入框、下拉、问候语和主播名单的改动都先留在本地；点下面的按钮才真正生效。开关类在点击时已即时保存。'),
