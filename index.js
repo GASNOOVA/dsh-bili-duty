@@ -1525,7 +1525,36 @@ export function apply(ctx) {
     if (req.method === 'POST' && path.endsWith('/tick')) {
       rt.lastAutoCheckAt = 0
       await heartbeat()
-      return sendJson(res, 200, { ok: true, main: rt.main, lastError: rt.lastError })
+      // 手动检查是用户明确点的按钮：不受「工作时间」和自动开关限制。
+      // 自动模式在非值守时段不选台（设计如此），但手动检查应该能直接进在播房间。
+      let manual = ''
+      if (!rt.main && !rt.waiting) {
+        await refreshLive(true)
+        const pick = enabledStreamers().find((s) => isLive(s.mid))
+        const live = pick ? liveOf(pick.mid) : null
+        if (pick && live?.realRoomId) {
+          await enterMain({
+            mid: pick.mid,
+            name: live.uname || pick.name,
+            roomId: live.roomId,
+            realRoomId: live.realRoomId,
+            title: live.title,
+          }, '手动检查')
+          manual = 'entered'
+          log(`手动检查：进入「${live.uname || pick.name}」直播间（手动检查不受值守时段限制）`)
+        } else {
+          manual = pick ? 'room-not-ready' : 'no-live'
+        }
+      }
+      const outside = !inWorkHours(cfg.workHours, Date.now(), cfg.workHoursTz)
+      return sendJson(res, 200, {
+        ok: true,
+        main: rt.main,
+        lastError: rt.lastError,
+        manual,
+        outside,
+        hint: outside ? `当前不在值守时段（${cfg.workHours}，${cfg.workHoursTz}），自动模式不会进房；手动检查不受此限制` : '',
+      })
     }
 
     if (req.method === 'POST' && path.endsWith('/stop')) {

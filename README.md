@@ -47,6 +47,7 @@ dsh plugin --profile web add github:你的用户名/dsh-bili-duty
 - **自动模式**：工作时间（默认 `08:00-24:00`，时区可选「北京时间」或「本机本地时间」）内每 15 分钟检查一遍 5 个主播；有人开播就进主看房盯到该主播下播；下播后按列表顺序切下一个在播的。
   - `workHoursTz: beijing`（默认，固定 UTC+8；宿主容器时区无关）
   - `workHoursTz: local` 或任意 IANA 时区名（如 `Europe/Berlin`）：设置页选「本机本地时间（浏览器时区）」时会自动记录浏览器时区，自动处理夏令时
+  - 非工作时间自动模式不会开台；但面板上的「立即检查」是手动动作，**不受工作时间和自动开关限制**——点了就进当前在播的第一个主播房间（用于深夜临时值守）
 - **手动计划**：一次性计划。提前 10 分钟进房（即使还没开播），到计划时间仍未开播再等 10 分钟；手动计划不受工作时间限制。
 
 两个调度源不互斥：手动计划窗口内自动模式会让路；没有计划时自动模式照常工作。
@@ -142,6 +143,7 @@ node scripts/test-clean.mjs    # 日志轮转/计划裁剪
 node scripts/test-attach-clean.mjs  # 附件保守回收（28 项断言）
 node scripts/test-card-parse.mjs  # 预约卡片/时间解析
 node scripts/test-client-register.mjs  # client 注册槽位冒烟
+node scripts/test-manual-check.mjs  # 手动检查不受值守时段限制
 ```
 
 ## License

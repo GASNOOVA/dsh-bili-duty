@@ -1157,8 +1157,20 @@ select[data-bd-input]{cursor:pointer;}
         try {
           const r = await jpost('/tick')
           if (!r.ok) throw new Error(r.error || '检查失败')
-          const cur = r.main || r.current || null
-          setMsg({ tone: 'good', text: cur ? `已进入「${cur.name || cur.uname || '直播间'}」` : '检查完成：现在没有可进的主播房间' })
+          const cur = r.main || null
+          let text
+          if (cur) {
+            text = `已进入「${cur.name || '直播间'}」`
+            if (r.outside) text += '（手动检查，不受值守时段限制）'
+          } else if (r.manual === 'no-live') {
+            text = '检查完成：当前没有主播在播'
+          } else if (r.manual === 'room-not-ready') {
+            text = '检查完成：找到在播主播但房间信息未就绪，请再点一次'
+          } else {
+            text = '检查完成：没有可进入的直播间'
+          }
+          if (!cur && r.hint) text += `；${r.hint}`
+          setMsg({ tone: cur ? 'good' : 'info', text })
           refresh()
         } catch (e) { setMsg({ tone: 'warn', text: '检查失败：' + errText(e) }) } finally { setBusy('') }
       }

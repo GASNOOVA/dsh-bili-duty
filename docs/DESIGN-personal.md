@@ -500,3 +500,12 @@
   - 接口：`GET /api/bili-duty/runtime`、`POST /api/bili-duty/runtime {action:'sweep'}`；控制面板「调试 → 运行时文件清理 → 立即清理」。
 - 测试：`scripts/test-attach-clean.mjs` 28 项断言全过（共享对象不跟踪、跟踪幂等、保留期内不删、过期删除、会话引用保护、size/sha 不一致、超预算延后、跟踪上限淘汰、tmp 清理、明文/zstd 会话扫描、坏跟踪文件容错）。
 - 手动清理：删掉工作区开发探针 `.probe/`（4.8MB，gitignored）；附件库里本次会话 read_image 生成的 11 个缩略图未删（属于会话引用，留给 DSH 未来回收策略）。
+
+## 19. v1.11.4 手动检查绕过值守时段（2026-11-10）
+
+- 动因：用户 m01438 报「乃琳Queen 正在直播，但手动检查/自动检查都进不了房间」。取证时北京时间已是 00:16，`config.workHours = 08:00-24:00`，log 里 v1.11.3 挂载后没有任何「进入主看房」。
+- 根因：`POST /api/bili-duty/tick` 只把 `lastAutoCheckAt` 归零后调用 `heartbeat()`；自动检查入口 `autoSelect()` 第一道判断就是 `inWorkHours(...)`，非值守时段直接 return。因此「手动检查」按钮复用同一条路径时，也被工作时间闸门静默挡掉。
+- 修复（index.js）：`/tick` 在 heartbeat 之后追加手动兜底：若当前无主看房、也没有等待中的计划，则强制 `refreshLive(true)` → 选第一个 `liveStatus === 1` 的已启用主播 → `enterMain(..., '手动检查')`；无论是否在值守时段、无论自动开关是否打开，用户主动点检查都直接进在播房间。响应新增 `manual`（entered / room-not-ready / no-live）、`outside`（当前是否在值守时段外）、`hint`（说明自动模式不会在非值守时段开台）。
+- 客户端（client.js）：`onTick` 根据响应显示「已进入「主播」」「当前没有主播在播」「房间信息未就绪，请再点一次」等；非值守时段提示「手动检查，不受值守时段限制」。
+- 边界：自动模式的 08:00–24:00 行为不变（设计如此）；手动计划仍在 `waiting` 期间优先，不会被「立即检查」插队；插件不会因为到点下班主动离开已有主看房。
+- 单测：`scripts/test-manual-check.mjs` 假 ctx + 假 fetch（仅 672342685 在播），配置刻意落在值守时段外，断言 `/tick` 仍进入 22625027、返回 `manual:'entered'`、`outside:true`，且日志包含「手动检查：进入」；8 项断言通过。
