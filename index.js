@@ -19,7 +19,7 @@
  * 设计文档：docs/DESIGN-personal.md
  * ============================================================================
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -45,6 +45,7 @@ import { extractCardReserve, parseLiveCard } from './lib/duty-card.mjs'
 import { DanmakuClient, getRoomByUid, getRoomInfo, sendDanmaku } from './lib/live.mjs'
 import { generateQr, pollQr, qrSvg, whoAmI } from './lib/auth.mjs'
 import { makeLlm } from './lib/llm.mjs'
+import { prunePlans, rotateLogIfNeeded } from './lib/duty-clean.mjs'
 
 export const name = 'bili-duty'
 export const inject = ['webServer']
@@ -81,7 +82,14 @@ const readJson = (file, fallback) => {
   try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return fallback }
 }
 const writeJson = (file, value) => {
-  try { writeFileSync(file, JSON.stringify(value, null, 2), 'utf8') } catch { /* 写不动就算了 */ }
+  // tmp + rename：进程被杀时不会留下半截 JSON / 脏 .tmp
+  const tmp = `${file}.tmp`
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
+    renameSync(tmp, file)
+  } catch {
+    try { unlinkSync(tmp) } catch { /* 清不掉就算了 */ }
+  }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const jitter = (min, max) => min + Math.floor(Math.random() * Math.max(1, max - min))
@@ -220,17 +228,29 @@ export function apply(ctx) {
   let version = ''
   try { version = JSON.parse(readFileSync(join(pluginDir, 'package.json'), 'utf8')).version || '' } catch { version = '' }
 
+  // 启动清理：上次崩溃可能留下半截 .tmp；live.log 超限先轮转一次
+  for (const f of [cfgFile, stateFile, credFile]) {
+    try { if (existsSync(`${f}.tmp`)) unlinkSync(`${f}.tmp`) } catch { /* 清不掉就算了 */ }
+  }
+  try { rotateLogIfNeeded(logFile) } catch { /* 轮转失败不致命，继续写 */ }
+
   const cfg = normalizeConfig(readJson(cfgFile, DEFAULTS))
   const saveCfg = () => writeJson(cfgFile, cfg)
   const store = createStore(home)
   store.load()
 
   const logs = []
+  let logWrites = 0
   const log = (msg) => {
     const line = `[${nowIso().slice(11, 19)}] ${msg}`
     logs.push(line)
     if (logs.length > MAX_LOGS) logs.shift()
     try { appendFileSync(logFile, line + '\n', 'utf8') } catch { /* 不致命 */ }
+    logWrites += 1
+    // 每 200 行检查一次大小（约 16KB），超 512KB 就只留最后 400 行
+    if (logWrites % 200 === 0) {
+      try { rotateLogIfNeeded(logFile) } catch { /* 忽略 */ }
+    }
   }
 
   const llm = makeLlm(ctx, cfg)
@@ -276,6 +296,7 @@ export function apply(ctx) {
     lastAutoCheckAt: 0,
     lastAliveCheckAt: 0,
     lastSweepAt: 0,
+    lastPlansPruneAt: 0,
     nextAutoCheckAt: 0,
     pausedUntil: 0,
     lastError: '',
@@ -994,7 +1015,17 @@ export function apply(ctx) {
     }
     try {
       const now = Date.now()
-      store.roll(now)
+      const rolled = store.roll(now)
+      // 计划裁剪：跨日或每 6 小时一次；fired/missed 只留最近 7 天，总条数 ≤60
+      if (rolled || now - rt.lastPlansPruneAt > 6 * 3600 * 1000) {
+        rt.lastPlansPruneAt = now
+        const pruned = prunePlans(cfg.plans, now)
+        if (pruned.removed > 0) {
+          cfg.plans = pruned.plans
+          saveCfg()
+          log(`清理历史计划 ${pruned.removed} 条（保留最近 7 天，当前 ${cfg.plans.length} 条）`)
+        }
+      }
       if (now - rt.lastLiveRefreshAt > LIVE_REFRESH_MS) await refreshLive()
       await processPlans()
       if (now - rt.lastAutoCheckAt >= AUTO_CHECK_MS) {

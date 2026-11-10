@@ -98,6 +98,15 @@
   - 准确性：3000×2367 官方日程表实测 **11/11 场次全部正确**（日期列对齐已人工核对）；提示词里加入「按节目块中心与日期列中心对齐」「11/13 贝拉&嘉然、11/14 A-SOUL夜谈、11/15 有点宜思 三条校准事实」「每天场次数异常需复核」。
   - 兜底：max 推理若把输出预算全花在 reasoning 上（正文 0 字），自动用 high 重试一次；chunk/usage 统计写日志（`/status` 不暴露原始 prompt）。
 
+### 4.2.3 运行时文件与清理（2026-11-10 新增）
+
+- `lib/duty-clean.mjs`（纯函数 + `scripts/test-clean.mjs` 覆盖）：
+  - `rotateLogIfNeeded`：`live.log` >512KB 时只保留最后 400 行（tmp+rename 原子替换），启动时 + 每写 200 行检查一次；
+  - `prunePlans`：pending 全保留，fired/missed 只留最近 7 天（按计划时间），总数超 60 时先丢最旧的非 pending。
+- `config.json` 改为原子写（tmp + rename，失败清理 tmp）；启动时清理 `config/state/credential` 的残留 `.tmp`。
+- 识图附件走宿主 `attachments.saveImage`（内容 hash 去重 + 规范化压缩）；DSH 0.2.2 无附件回收策略，插件不删共享附件，README 里说明手动清理路径。
+- 内存态均有上限：日志 120、弹幕窗口 300、sentTexts 40、dynamicsCache 每次读取整份覆盖。
+
 ### 4.3 多主播同时开播：主看房 + 任务房切换（核心规则）
 
 1. **主看房（陪伴）**：手动计划目标优先；其次自动模式按列表顺序第一个在播；已在播就不换。
