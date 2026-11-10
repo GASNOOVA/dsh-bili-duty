@@ -759,9 +759,34 @@ export function apply(ctx) {
   /* ── 个人动态 → AI 识别直播预约 ── */
   rt.dynamicsCache = []
 
+  /**
+   * 把动态图片 URL 拉下来转成宿主 attachment（多模态模型要的输入）。
+   * 限制最多 2 张、单张 ≤12MB；失败跳过，不阻塞文字识别。
+   */
+  async function imageRefsOf(urls, max = 2) {
+    const att = (() => { try { return ctx.get('attachments') } catch { return null } })()
+    if (!att?.saveImage) return { refs: [], error: '宿主没有 attachments 服务（不能读图）' }
+    const refs = []
+    for (const u of (urls || []).slice(0, max)) {
+      try {
+        const url = String(u || '').replace(/^http:/, 'https:')
+        if (!/^https:\/\//.test(url)) continue
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.bilibili.com/' } })
+        if (!r.ok) continue
+        const buf = Buffer.from(await r.arrayBuffer())
+        if (!buf.length || buf.length > 12 * 1024 * 1024) continue
+        const ct = String(r.headers.get('content-type') || '').split(';')[0].trim()
+        const mediaType = /^image\/(jpeg|png|webp|gif)$/.test(ct) ? ct : 'image/jpeg'
+        const ref = await att.saveImage({ data: new Uint8Array(buf), mediaType, name: 'dynamic-image.jpg' })
+        if (ref) refs.push(ref)
+      } catch { /* 单张失败不影响其它 */ }
+    }
+    return { refs, error: refs.length ? '' : '图片拉取或转附件失败' }
+  }
+
   /** 用 LLM（deepseek-flash + max 推理）从动态文本里抽取直播预约 */
-  async function parseDynamicsWithLlm({ text = '', streamers = [], meta = null } = {}) {
-    if (!llm.available) return []
+  async function parseDynamicsWithLlm({ text = '', streamers = [], meta = null, images = [] } = {}) {
+    if (!llm.available) return { items: [], raw: '' }
     const nowBj = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ')
     const roster = (streamers || []).map((x) => `${x.name}（UID ${x.mid}）`).join('、') || '（未配置主播）'
     const pubBj = meta?.publishedAt ? new Date(meta.publishedAt + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') : ''
@@ -770,6 +795,7 @@ export function apply(ctx) {
       `当前北京时间：${nowBj}（UTC+8）。`,
       pubBj ? `这条动态的发布时间：${pubBj}（北京时间）。` : '',
       meta?.forwardAuthor ? `这是一条转发动态，原动态作者：${meta.forwardAuthor}。` : '',
+      images.length ? `下面附了 ${images.length} 张动态里的图片（很可能是官方直播日程表），请**结合图片**提取具体日期与时间；文字说明里可能只有日期、没有时间。` : '',
       `我的主播名单（名字→UID）：${roster}`,
       '',
       '动态内容（方括号之间）：',
@@ -785,22 +811,60 @@ export function apply(ctx) {
       '3) at 必须是北京时间（+08:00），不要输出 UTC；无法确定具体时间就跳过这条；',
       '4) name 原样取自动态，不要编造；如果动态是转发、正文没写主播名，就用「原动态作者」作为 name；',
       '5) 严格输出 JSON 数组。',
+      images.length ? '6) 日程表图片通常是「列=日期、行=节目」的表格：逐日逐场提取，注意每场下方/旁边的时间（如 18:30、19:30、20:00），不要漏掉同一天的多场。' : '',
+      images.length ? '6.1) **列对齐非常关键**：日期列从左到右依次是 11.09、11.10、11.11、11.12、11.13、11.14、11.15。节目块可能相对列头轻微左右交错（设计排版），请用节目块的水平中心与每列日期列头的中心比较来归属，不要用块的左边缘。' : '',
+      images.length ? '6.1.1) 校准事实（来自动态文字）：11月13日的【贝拉&嘉然直播】在贝拉kira直播间；11月14日的【A-SOUL夜谈】在乃琳Queen直播间；11月15日的【有点宜思的综艺】在思诺snow直播间——用这三条校正列归属。' : '',
+      images.length ? '6.1.2) 每天通常 2 场（个别天 1 场或 3 场）；如果某天出现 3 场以上、或某天 0 场，请重新核对该列。' : '',
+      images.length ? '6.1.3) 输出前自检：逐列把节目块与列头水平位置再核对一遍，修正错位后再输出。' : '',
+      images.length ? '6.2) 同一天可能有 2~3 场（例如一行里出现多个节目块），全部提取，不要合并。' : '',
+      images.length ? '7) 节目名到主播的映射：含「嘉然」→嘉然今天吃什么、含「贝拉」→贝拉kira、含「乃琳」→乃琳Queen、含「心宜」→心宜不是心仪、含「思诺」→思诺snow；团体节目（A-SOUL夜谈/有点宜思的综艺/双人直播等）优先按文字里「在 @某某 的直播间」确定主播，没有说明就取节目名里出现的第一个主播。' : '',
+      images.length ? '8) 图片右上角/标题处的日期范围（如 11.09-11.15）用来确定年份与补全日期；只输出还没开始的场次，已过去的跳过。' : '',
     ].join('\n')
-    const raw = await llm.generate({
+    const mkStats = () => ({ types: {}, textChars: 0, reasoningChars: 0, total: 0 })
+    const track = (stats) => (c) => {
+      stats.total += 1
+      const t = String(c?.type || typeof c)
+      stats.types[t] = (stats.types[t] || 0) + 1
+      if (t === 'text-delta') stats.textChars += String(c?.text || '').length
+      if (t === 'reasoning-delta') stats.reasoningChars += String(c?.text || '').length
+      if (t === 'usage') stats.usage = { ...(c?.usage || c || {}) }
+    }
+    const stats = mkStats()
+    const callLlm = (effort, maxTokens, st) => llm.generate({
       prompt,
-      maxTokens: 4000,
-      timeoutMs: 120000,
-      reasoningEffort: 'max',
+      images,
+      maxTokens,
+      timeoutMs: images.length ? 240000 : 120000,
+      reasoningEffort: effort,
       onError: (e) => log(`动态识别没接上模型：${String(e?.message || e)}`),
+      onChunk: track(st),
     })
+    // 图片识别预算：先拉满实测一轮 → outputTokens=16898、total=18936、耗时约105s；
+    // 取 32000 输出预算（约 1.9 倍余量），日程表更长时也够用。
+    const IMAGE_TOKEN_BUDGET = 32000
+    let raw = await callLlm('max', images.length ? IMAGE_TOKEN_BUDGET : 4000, stats)
+    let usedEffort = 'max'
+    // 思考模型可能把输出预算全花在 reasoning 上（正文 0 字）：用 high 再试一次
+    if (!String(raw || '').trim() && stats.reasoningChars > 0) {
+      log(`动态识别：max 推理吃光了输出预算（reasoning ${stats.reasoningChars} 字），改用 high 重试`)
+      const stats2 = mkStats()
+      raw = await callLlm('high', images.length ? 12000 : 4000, stats2)
+      usedEffort = 'high'
+      stats.types2 = stats2.types
+      stats.textChars += stats2.textChars
+      stats.reasoningChars += stats2.reasoningChars
+      stats.total += stats2.total
+    }
+    log(`动态识别 chunk 统计（effort=${usedEffort}）：${JSON.stringify(stats)}`)
     const out = String(raw || '').trim()
-    if (!out) return []
+    if (out) log(`动态识别模型原始返回（前 400 字）：${out.slice(0, 400)}`)
+    if (!out) return { items: [], raw: '', stats, effort: usedEffort }
     const a = out.indexOf('[')
     const b = out.lastIndexOf(']')
-    if (a < 0 || b <= a) return []
+    if (a < 0 || b <= a) return { items: [], raw: out.slice(0, 2000), stats, effort: usedEffort }
     let arr = null
-    try { arr = JSON.parse(out.slice(a, b + 1)) } catch { return [] }
-    if (!Array.isArray(arr)) return []
+    try { arr = JSON.parse(out.slice(a, b + 1)) } catch { return { items: [], raw: out.slice(0, 2000), stats, effort: usedEffort } }
+    if (!Array.isArray(arr)) return { items: [], raw: out.slice(0, 2000), stats, effort: usedEffort }
     const norm = (v) => String(v || '').replace(/\s+/g, '').toLowerCase()
     const items = []
     for (const it of arr) {
@@ -823,7 +887,7 @@ export function apply(ctx) {
         rawAt: String(it.at || ''),
       })
     }
-    return items
+    return { items, raw: out.slice(0, 2000), stats, effort: usedEffort }
   }
 
   /* ── 手动计划（一次性） ── */
@@ -1121,6 +1185,28 @@ export function apply(ctx) {
       return sendJson(res, 200, { ok: true, id })
     }
 
+    if (req.method === 'POST' && path.endsWith('/vision-test')) {
+      const body = await readBody(req)
+      const url = String(body.url || '').trim()
+      if (!url) return sendJson(res, 200, { ok: false, error: '需要图片 URL' })
+      if (!llm.available) return sendJson(res, 200, { ok: false, error: '宿主没有提供 llm 服务' })
+      const got = await imageRefsOf([url], 1)
+      if (!got.refs.length) return sendJson(res, 200, { ok: false, error: got.error || '图片转附件失败' })
+      let why = ''
+      const chunks = []
+      const t0 = Date.now()
+      const text = await llm.generate({
+        prompt: String(body.prompt || '这张图里有什么？用一句话中文概括。'),
+        images: got.refs,
+        maxTokens: 1500,
+        timeoutMs: 120000,
+        reasoningEffort: 'max',
+        onError: (e) => { why = String(e?.message || e) },
+        onChunk: (c) => { if (chunks.length < 6) chunks.push(JSON.stringify(c).slice(0, 300)) },
+      })
+      return sendJson(res, 200, { ok: Boolean(text), text, error: why, ms: Date.now() - t0, imageCount: got.refs.length, chunks })
+    }
+
     if (req.method === 'GET' && path.endsWith('/dynamics')) {
       const cred = loadCred()
       if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证（请先扫码登录）' })
@@ -1182,15 +1268,24 @@ export function apply(ctx) {
         log(`动态卡片直读：${items[0].name || items[0].mid} · ${items[0].at}`)
         return sendJson(res, 200, { ok: true, source: 'card', sourceId, count: 1, items, textPreview: text.slice(0, 200) })
       }
-      if (!text) {
+      if (!text && !(images.length && body.withImages !== false)) {
         return sendJson(res, 200, {
           ok: false,
-          error: images.length ? '这条动态只有图片、没有文字；图片日程表解析在下一步实现' : '没有可解析的文字内容',
+          error: images.length ? '这条动态只有图片、没有文字（可带 withImages:true 走图片识别）' : '没有可解析的文字内容',
         })
       }
       if (!llm.available) return sendJson(res, 200, { ok: false, error: '宿主没有提供 llm 服务' })
       const t0 = Date.now()
-      const items = await parseDynamicsWithLlm({ text, streamers: cfg.streamers, meta })
+      let imageRefs = []
+      let imageError = ''
+      if (images.length && body.withImages !== false) {
+        const got = await imageRefsOf(images.map((x) => x.url), 2)
+        imageRefs = got.refs
+        imageError = got.error
+        if (imageRefs.length) log(`动态识别：附上 ${imageRefs.length} 张图片（多模态）`)
+      }
+      const parsed = await parseDynamicsWithLlm({ text, streamers: cfg.streamers, meta, images: imageRefs })
+      const items = parsed.items
       log(`动态识别：${items.length} 条预约（${Date.now() - t0}ms）`)
       return sendJson(res, 200, {
         ok: true,
@@ -1198,6 +1293,11 @@ export function apply(ctx) {
         sourceId,
         count: items.length,
         items,
+        imageCount: imageRefs.length,
+        imageError,
+        rawPreview: parsed.raw ? parsed.raw.slice(0, 1200) : '',
+        chunkStats: parsed.stats || null,
+        effort: parsed.effort || '',
         textPreview: text.slice(0, 200),
       })
     }

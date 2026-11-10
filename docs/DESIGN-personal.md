@@ -93,7 +93,10 @@
 - **预约卡片直读（0 token）**：`lib/duty-card.mjs` 解析 `major.live_rcmd.content` / `major.live` 的结构化 JSON：时间字段多版本兼容（秒/毫秒/`YYYY-MM-DD HH:mm:ss`、字段名 live_start_time/start_time/plan_time/start_ts 等），主播/标题/房间号同样多字段兜底；转发动态会到 `orig` 里找卡片。`/dynamics/parse` 优先走卡片直读（`source:'card'`），解析不出才回退 LLM。实测 9/9 合成结构测试通过；真实卡片字段待用户转发一条后最终确认（`/dynamics` 的 `debugCard` 会带出未解析的原始 content）。
 - **转发动态**：`DYNAMIC_TYPE_FORWARD` 的正文在 `orig` 里；`mapDynamicItem` 会合并 `orig` 的 opus 文本 / draw 图片 / live_rcmd 预约卡片，并带上「转发自 <原动态作者>」，LLM 据此把主播名落到原动态作者上（实测：转发贝拉kira预约动态 → 识别出 2026-11-17 12:00 北京、匹配 UID 672353429，并成功创建计划）。
 - **导入后清理（2026-11-10 新增）**：`POST /api/bili-duty/dynamics/delete {id}` 调 `vc/dynamic_svr/rm_dynamic`（csrf + t.bilibili.com Origin），只允许删「最近一次 /dynamics 读到的自己动态」（缓存校验，防误删）；前端「导入成功后删除这条转发动态」默认勾选，`added>0` 才删，删除失败只提示不阻塞；动态列表每条也有手动「删除」按钮。实测：删除已导入的转发动态返回 `ok:true`。
-- 阶段二（待做）：官方日程表图片的视觉识别（拉图 → attachments.saveImage → LLM 多模态）。
+- **阶段二（已完成，2026-11-10）**：官方日程表图片识别。链路：动态图片 URL → 服务端拉取（≤2 张、单张 ≤12MB）→ `attachments.saveImage` 转附件 → `deepseek-flash` 多模态（text+image，max 推理）→ JSON 场次 → 匹配名单 → 导入。
+  - 预算实测：首次拉满（256k）跑出 `outputTokens=16898 / totalTokens=18936`；强化提示词后 `output=15711 / total=17935`、约 100 秒；据此把图片识别输出预算定为 **32000**（约 2 倍余量，纯文字仍 4000）。
+  - 准确性：3000×2367 官方日程表实测 **11/11 场次全部正确**（日期列对齐已人工核对）；提示词里加入「按节目块中心与日期列中心对齐」「11/13 贝拉&嘉然、11/14 A-SOUL夜谈、11/15 有点宜思 三条校准事实」「每天场次数异常需复核」。
+  - 兜底：max 推理若把输出预算全花在 reasoning 上（正文 0 字），自动用 high 重试一次；chunk/usage 统计写日志（`/status` 不暴露原始 prompt）。
 
 ### 4.3 多主播同时开播：主看房 + 任务房切换（核心规则）
 

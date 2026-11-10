@@ -655,7 +655,7 @@ select[data-bd-input]{cursor:pointer;}
       const parseDyn = async (id) => {
         setDynLoading('parse'); setDynMsg(null); setParsed(null); setParsedSource(String(id || ''))
         try {
-          const r = await jpost('/dynamics/parse', { id })
+          const r = await jpost('/dynamics/parse', { id, withImages: true })
           if (!r || r.ok === false) throw new Error((r && r.error) || '识别失败')
           const items = Array.isArray(r.items) ? r.items : []
           setParsed(items)
@@ -664,7 +664,7 @@ select[data-bd-input]{cursor:pointer;}
           setParsedPicked(init)
           const viaCard = r.source === 'card'
           setDynMsg({ tone: items.length ? 'good' : 'warn', text: items.length
-            ? (viaCard ? `从预约卡片直接读取 ${items.length} 条（未用模型）` : `AI 识别出 ${items.length} 条预约`)
+            ? (viaCard ? `从预约卡片直接读取 ${items.length} 条（未用模型）` : `AI 识别出 ${items.length} 条预约` + (r.imageCount ? `（含 ${r.imageCount} 张图片）` : ''))
               + (items.some((x) => !x.matched || !x.mid) ? '（有未匹配到主播名单的项，导入时会跳过）' : '')
             : (viaCard ? '卡片里没解析出预约信息' : '这条动态里没有识别出明确的直播预约（或模型输出为空）') })
         } catch (e) {
@@ -770,7 +770,7 @@ select[data-bd-input]{cursor:pointer;}
             'data-bd-btn': '', disabled: dynLoading !== '',
             onClick: loadDynamics,
           }, dynLoading === 'list' ? '读取中…' : '读取我的动态'),
-          h(Note, null, '用 deepseek-flash（max 推理）识别动态里的直播预约；先在 B站 空间发一条包含预约信息的动态。')),
+          h(Note, null, '用 deepseek-flash（max 推理）识别动态里的直播预约；带图片的动态会自动把图片一起交给多模态模型（日程表截图可直接读）。')),
         dynMsg ? h('div', { 'data-bd-msg': '', 'data-tone': dynMsg.tone }, dynMsg.text) : null,
         dyns && dyns.length
           ? h('div', { 'data-bd-list': '' }, dyns.map((d) => h('div', { 'data-bd-plan': '', key: d.id },
@@ -780,7 +780,7 @@ select[data-bd-input]{cursor:pointer;}
               h('button', {
                 'data-bd-btn': '', 'data-mini': '', disabled: dynLoading !== '',
                 onClick: () => parseDyn(d.id),
-              }, dynLoading === 'parse' ? '识别中…' : (d.reserve ? '直接读取卡片' : 'AI 识别预约')),
+              }, dynLoading === 'parse' ? '识别中…' : (d.reserve ? '直接读取卡片' : (d.images?.length ? 'AI 识别（含图片）' : 'AI 识别预约'))),
               h('button', {
                 'data-bd-btn': '', 'data-mini': '', 'data-danger': '', disabled: dynLoading !== '',
                 onClick: async () => {
