@@ -6,7 +6,8 @@
  *   · id 必须等于 package.json 的包名，否则加载器判定「loaded without registering」。
  *   · factory 内只 require('react')；需要别的模块必须写进 package.json 的 dsh.client.external。
  *   · factory 返回 Cordis 插件 { inject:['slots'], apply(ctx) }；
- *     apply 里往 settings.section 槽注册一页（label = 设置左侧导航那一项）。
+ *     apply 里注册「侧边栏图标（sidebar.panellist）+ 主界面页面（main）」——
+ *     不再占用「设置」页，入口和 Mnemon 一样在左侧导航栏（小电视图标）。
  *   · hooks 必须写在组件里所有 early return 之前，否则 React #310。
  *
  * 页面 = 6 个区块：① 状态 hero ② B 站账号 ③ 5 个主播 ④ 值守模式（自动 + 手动计划）
@@ -45,7 +46,9 @@ window.__ModuleLoader__.load({
        沿用旧设置页的 data-* 卡片/开关/按钮风格，前缀改成 bd；颜色继续用
        --dsw-alias-* 变量 + 兜底，暗色/亮色都能看；品牌色粉 #fb7299 / 蓝 #00aeec。 */
     const CSS = `
-[data-bd-page]{display:flex;flex-direction:column;gap:16px;padding:2px 2px 10px;max-width:680px;font-size:13px;}
+[data-bd-page]{display:flex;flex-direction:column;gap:16px;padding:2px 2px 10px;max-width:760px;font-size:13px;}
+[data-bd-main]{height:100%;overflow-y:auto;box-sizing:border-box;padding:18px 24px 30px;}
+[data-bd-main] [data-bd-page]{margin:0 auto;}
 [data-bd-hero]{position:relative;border-radius:14px;padding:16px 18px;overflow:hidden;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.18));background:var(--dsw-alias-bg-overlay,rgba(128,128,128,.07));}
 [data-bd-hero]::before{content:'';position:absolute;inset:0 0 auto 0;height:3px;background:linear-gradient(90deg,#fb7299,#00aeec);}
 [data-bd-hero-top]{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
@@ -1245,6 +1248,25 @@ select[data-bd-input]{cursor:pointer;}
     }
 
     /* 面板万一渲染崩了，别整节白屏 —— 把错误摆出来当线索 */
+    /** B站小电视风格图标（天线 + 两只眼睛 + 微笑），随主题/选中色变化 */
+    function BiliTvIcon({ size = 18, active = false } = {}) {
+      const c = active ? '#fb7299' : 'currentColor'
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 24 24', fill: 'none',
+        xmlns: 'http://www.w3.org/2000/svg', 'aria-hidden': 'true',
+      },
+        h('rect', { x: 2.4, y: 6.8, width: 19.2, height: 14, rx: 3.2, stroke: c, strokeWidth: 1.8 }),
+        h('path', { d: 'M7.7 6.6 5.6 3.2M16.3 6.6l2.1-3.4', stroke: c, strokeWidth: 1.8, strokeLinecap: 'round' }),
+        h('circle', { cx: 9.1, cy: 12.9, r: 1.15, fill: c }),
+        h('circle', { cx: 14.9, cy: 12.9, r: 1.15, fill: c }),
+        h('path', { d: 'M8.9 16.7c1.7 1.3 4.5 1.3 6.2 0', stroke: c, strokeWidth: 1.8, strokeLinecap: 'round' }))
+    }
+
+    /** 主界面（左侧导航「直播值守」）里的页面容器 */
+    function BiliDutyPage() {
+      return h('div', { 'data-bd-main': '' }, h(Boundary, null, h(Panel)))
+    }
+
     class Boundary extends React.Component {
       constructor(props) { super(props); this.state = { err: null } }
       static getDerivedStateFromError(err) {
@@ -1263,7 +1285,7 @@ select[data-bd-input]{cursor:pointer;}
 
     return {
       // 必须声明 slots 依赖：inject 为空数组时 fiber 等不到 slots 服务，
-      // 往 settings.section 注入 UI 会静默失效（旧版踩过的坑）。
+      // 必须声明 slots 依赖；apply 里注册主界面页面和侧边栏图标。
       inject: ['slots'],
       apply(ctx) {
         try {
@@ -1283,13 +1305,23 @@ select[data-bd-input]{cursor:pointer;}
           slots = (ctx && typeof ctx.get === 'function' ? ctx.get('slots') : undefined) || (ctx && ctx.slots)
         } catch { /* 拿不到就按不可用处理 */ }
         if (!slots || typeof slots.inject !== 'function' || typeof slots.register !== 'function') return
+        // 主界面页面：keyed 槽，key = 左侧导航项 id
         try {
-          slots.inject('settings.section', () => slots.register(
-            { name: 'settings.section', id: 'bili-duty', order: 31, label: '直播值守' },
-            () => h(Boundary, null, h(Panel)),
+          slots.inject('main', () => slots.register(
+            { name: 'main', key: 'bili-duty' },
+            BiliDutyPage,
           ))
         } catch (e) {
-          try { console.warn('[dsh-bili-duty] 设置页注册失败', (e && e.message) || e) } catch { /* 忽略 */ }
+          try { console.warn('[dsh-bili-duty] 主界面注册失败', (e && e.message) || e) } catch { /* 忽略 */ }
+        }
+        // 左侧导航栏图标 + 标题（点图标切到主界面页面）
+        try {
+          slots.inject('sidebar.panellist', () => slots.register(
+            { name: 'sidebar.panellist', id: 'bili-duty', order: 20, label: '直播值守' },
+            BiliTvIcon,
+          ))
+        } catch (e) {
+          try { console.warn('[dsh-bili-duty] 侧边栏图标注册失败', (e && e.message) || e) } catch { /* 忽略 */ }
         }
       },
     }
