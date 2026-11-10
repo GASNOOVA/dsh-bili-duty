@@ -167,7 +167,7 @@
   3. **上报层（探针确认）**：如果平台靠播放器心跳/上报接口统计，按探针结果补调（候选：播放器心跳 / 观看上报接口）。
 - 降级：拉流层不稳定 → 只保留基础层 + 上报层；都不可行 → 按你的要求「放弃观看任务」，状态表标注 `watchUnsupported`。
 - 资源：同一时刻最多拉 1 路（主看房），任务房不拉流。**P0 实测**：拉流链路正常，测试房间只提供 qn=250（请求 qn=150 会回落到 250），约 **300 KB/s（≈18 MB/分钟）**。
-- **观看时长口径（用户确认 + P0 实测）**：B站 粉丝团亲密度按观看时长增长，**每 15 分钟结算一次**；只拉流 5 分钟亲密度没有任何变化（today_feed 保持 1）。因此「观看任务」必须保持**完整在场**（进房接口 + 弹幕长连接心跳 + 拉流）连续 ≥15 分钟才会入账。插件实现为「进主看房后持续拉流 + 弹幕心跳」，只在主看房累计；补任务的房间不做观看。
+- **观看时长口径（v1.11.0 已修正，见 §15）**：~~P0 结论「完整在场（进房 + 弹幕心跳 + 拉流）连续 ≥15 分钟入账」~~ 是错的：平台只认网页端 `live-trace` E/X 心跳。插件现在进主看房后用 E/X 心跳上报（每 60 秒），连续 15 分钟 = 1 轮，每日上限 10 轮；进房/弹幕/拉流本身都不计观看。
 
 ### 5.4 打赏（可选，探针决定是否保留；已确认探针可真实送 1 次验证）
 
@@ -400,6 +400,46 @@
 ### 14.3 待完成（P2+）
 - P8 已完成：旧模块/`tools/` 删除、`getPlayUrl` 迁入 duty-watch、README/LICENSE 重写、包名与仓库信息更新。
 - 用 5 个目标主播的 UID 配好名单后验证：自动模式选台、下播切换、5 房间任务巡视、打赏开关。
-- ~~观看任务 16 分钟在场验证~~ ✅ 已验证通过（见 §9 E）；插件实现为「主看房拉流 + 弹幕心跳持续在线」。
+- ~~观看任务 16 分钟在场验证~~ ❌ 该结论被推翻（见 §15）：2026-11-10 实测三小时在场 0/10，必须用 live-trace E/X 心跳；v1.11.0 已重写。
 - 删除旧插件遗留文件（rating/moderation/recap/asr/audio/vision/tools）、README 重写、`/status` 瘦身、打包与最终回归（P8）。
 - 旧文件 `lib/live.mjs` 暂时保留（房间查询/弹幕客户端/发弹幕），后续可精简。
+
+## 15. v1.11.0 观看上报修正（2026-11-10，实测）
+
+### 15.1 问题
+- 用户反馈：2026-11-10 值守的三场直播（贝拉 3h+、思诺 1.5h、乃琳 40min+）观看时长亲密度都没增加。
+- 用官方任务接口复核：`GetActivatedMedalInfo` 的 `watchLive` 任务 `sub_title` 为「每日上限 **0/10**」，`is_done=false` —— 3 小时在场 0 轮，说明 v1.10.0 的做法（进房接口 + 弹幕 WS 心跳 + 持续拉流）**不被平台计为观看**。
+- 同时发现旧实现把 `rt.watch` 存在的时间全部记进 `watchedSec`，拉流 404/断流期间也在累加（虚高）。
+
+### 15.2 机制（参考 BLTH 的 watchTask.ts）
+观看任务走网页端 `live-trace` 心跳，不是 roomEntryAction、不是弹幕 WS、不是拉流：
+
+1. `GET https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?<wbiSign({room_id,web_location:'444.8'})>`
+   → `room_info.{room_id,uid,area_id,parent_area_id,live_status}`
+2. `POST https://live-trace.bilibili.com/xlive/data-interface/v1/x25Kn/E?<wbiSign(params)>`
+   - `id=JSON.stringify([parent_area_id, area_id, seq, room_id])`
+   - `device=JSON.stringify([buvid, uuid])`、`ruid=主播uid`、`ts=Date.now()`、`is_patch=0`、`heart_beat='[]'`、`ua`、`web_location='444.8'`、`csrf`
+   - 返回 `{timestamp, heartbeat_interval(实测 60), secret_key, secret_rule, patch_status}`
+3. 每 `heartbeat_interval` 秒 `POST .../x25Kn/X`：
+   - 签名 `s`：把 `id/device` 还原成 `{platform:'web',parent_id,area_id,seq_id,room_id,buvid,uuid,ets,time,ts}`，
+     先 `JSON.stringify`，再按 `secret_rule` 逐轮 HMAC（0=md5,1=sha1,2=sha256,3=sha224,4=sha512,5=sha384）
+   - 其它参数：`id`、`device`、`ruid`、`ets=上轮 timestamp`、`benchmark=secret_key`、`time=interval`、`ts`、`ua`、`trackid='-99998'`、`web_location='444.8'`、`csrf`
+   - 成功一次 = 上报 `interval` 秒；`seq` 每成功一次 +1；下一轮时间用响应里的 `timestamp+interval`
+- 连续 15 分钟 = 完成 1 轮；每日上限 10 轮（150 分钟）。下播/任务完成即停。
+- 设备标识：优先 cookie `LIVE_BUVID`；实测缺省时用登录的 `buvid3` 也能通过 E（2026-11-10 验证）。
+
+### 15.3 实现
+- 新增 `lib/duty-trace.mjs`：`getTraceRoom` / `getWatchTaskProgress` / `spyderSign` / `watchTrace`。
+- `index.js` `startWatch` 重写：进主看房 → 取房间 area → 查今日观看进度（已完成则跳过）→ 建立 E → 60 秒 X 循环；
+  每次 X 成功才 `store.markWatch(room, interval)`；失败 60 秒后重试；`leaveMain` 时 abort。
+- **不再拉流**：`pullStream` 从观看路径移除（省约 18 MB/分钟）；`lib/duty-watch.mjs` 保留给探针 `getPlayUrl`。
+- `/status` 新增 `watch: {roomId, running, reportedMins, intervalSec, task, error}`；控制台状态区显示「观看上报」。
+- 任务设置里「拉流清晰度」已隐藏，「观看直播」说明改为 live-trace 心跳。
+
+### 15.4 验证
+- 单测：`node scripts/test-trace.mjs` 6/6（签名链、E+X 时序、E 失败抛错、X 失败返回、字段解析）。
+- 真机（2026-11-10，UTC 14:40:17–14:55:17，乃琳 Queen 主看房）：
+  - E 建立成功（interval=60s），连续 15 次 X 全部成功，日志每 5 分钟打印「观看上报中：已上报 5/10/15 分钟」；
+  - 官方任务接口 `GetActivatedMedalInfo` 读数：观看任务从「每日上限 **0/10**，done:false」变为「每日上限 **1/10**」；
+  - 亲密度 264 → 271（同一时间段其余弹幕/点赞也在涨，观看轮次已确认入账）；
+  - 结论：E/X 心跳是观看任务的唯一有效上报方式；v1.10.0 的「进房 + 弹幕 + 拉流」3 小时 0/10 已复现为反例。

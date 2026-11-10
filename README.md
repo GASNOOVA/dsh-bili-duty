@@ -12,11 +12,11 @@
 | 🤖 | **自动值守** | 北京时间 08:00–24:00 每 15 分钟检查一次开播；有主播在播就进主看房挂着陪伴。 |
 | 📅 | **手动计划** | 设置页给某个主播加一条「计划开播时间」：提前 10 分钟进房等待，到点没开播最多再等 10 分钟；一次性、不受工作时间限制。 |
 | 🧠 | **动态识别导入** | 读取自己的 B站 空间动态，用 deepseek-flash（max 推理）识别动态里的直播预约，确认后批量导入计划。 |
-| 👀 | **观看任务** | 主看房持续拉低清流 + 弹幕长连接（完整在场）。B 站 粉丝团亲密度按观看时长结算（约每 15 分钟一次）。 |
+| 👀 | **观看任务** | 主看房用网页端 live-trace E/X 心跳上报观看时长（每 60 秒一次，**不再拉流**）。连续 15 分钟完成 1 轮，每天最多 10 轮；亲密度按轮结算。 |
 | 💬 | **发送弹幕** | ① 进房问候：每房每天一次，默认 10 条、间隔 30 秒（模板可编辑）；② AI 弹幕：默认**跟风复读**——读时间窗口内的弹幕流，复制正在被刷屏的那一句（也可切自由生成），默认 5 分钟一条、每房每日 100 条上限；③ 补任务弹幕。 |
 | 👍 | **点赞** | 每房每 10 分钟一轮、共 300 次；按房间下发的策略自动切批（实测每批 ≤15 次、批间隔 ≥5 秒）。 |
 | 🎁 | **粉丝团灯牌打赏** | 每房每天 1 个「粉丝团灯牌」（1 电池 = 100 金瓜子）；发前查余额，余额不足直接跳过；**绝不自动充值、绝不送超过 1 电池的礼物**；默认关闭。 |
-| 🔁 | **巡视补任务** | 其它在播主播有未完成的弹幕/点赞/打赏任务时，后台去补，不打断主看房的拉流与陪伴。 |
+| 🔁 | **巡视补任务** | 其它在播主播有未完成的弹幕/点赞/打赏任务时，后台去补，不打断主看房的观看上报与陪伴。 |
 | 📊 | **状态面板** | 每个主播今日「观看分钟 / 弹幕✓ / 点赞✓ / 打赏状态」、主看房、计划、日志。 |
 
 **不做的事**：不评分、不写笔记、不推送私信、不做语音转写/画面抽帧、不随机巡场、不支持多账号。
@@ -79,7 +79,7 @@ B站 的「已预约」列表接口读不到观众侧数据（实测 `GetReserve
 
 | 任务 | 实现 | 实测结论 |
 | --- | --- | --- |
-| 观看直播 | 进房接口 + 弹幕 WS 心跳 + 持续拉 qn=150 低清流（房间可能回落 250） | 只拉流 5 分钟不计；**完整在场 16 分钟后亲密度增长**（约每 15 分钟结算一次） |
+| 观看直播 | 网页端 live-trace 心跳：E 建立会话 + 每 60 秒 X 签名心跳（HMAC 链）；进房/弹幕/拉流本身都不算观看时长 | 心跳成功才计秒；连续 15 分钟 = 1 轮，每日上限 10 轮（接口返回 `每日上限 X/Y`）。v1.11.0 实测 3 小时在场 0/10 → 接入后正常增长 |
 | 发送弹幕 | `POST api.live.bilibili.com/msg/send`（复用原插件实现） | 问候 10 条间隔 30 秒可正常发出 |
 | 点赞 | `POST /xlive/app-ucenter/v1/like_info_v3/like/likeReportV3` | 房间下发 `report_click_limit=15`、`report_time_min=5s`，300 次 = 20 批 × 15 |
 | 打赏 | `POST /xlive/revenue/v2/gift/sendGoldMultiUser` | 1 电池「粉丝团灯牌」成功；参数中 `uid` 必须是送礼人自己 |
@@ -98,12 +98,14 @@ client.js             浏览器端：设置页（自注册模块）
 lib/duty-config.mjs   配置默认值与清洗（29 项）
 lib/duty-state.mjs    每日任务状态（北京自然日、原子写）
 lib/duty-actions.mjs  B站动作适配器（进房/点赞/礼物/钱包/粉丝牌/送礼）
-lib/duty-watch.mjs    观看任务：低清流拉流 + getPlayUrl
+lib/duty-trace.mjs    观看任务：live-trace E/X 心跳上报（WBI + HMAC 链式签名）
+lib/duty-watch.mjs    拉流工具（观看计时已改走 duty-trace；仅 scripts/probe.mjs 复用 getPlayUrl）
 lib/live.mjs          原插件保留：房间查询、弹幕长连接、发弹幕
 lib/auth.mjs          扫码登录
 lib/llm.mjs           借宿主模型生成 AI 弹幕
 vendor/qrcode.js      登录二维码（MIT）
 scripts/probe.mjs     技术探针（登录/房间/点赞/礼物/拉流，排障用）
+scripts/test-trace.mjs 观看上报单元测试（假 fetch，不碰网络）
 docs/                 设计文档与原插件解读笔记
 ```
 
@@ -114,7 +116,11 @@ docs/                 设计文档与原插件解读笔记
 ```bash
 node --check index.js
 node --check lib/duty-actions.mjs
-node scripts/probe.mjs help   # 探针需要扫码登录，凭证只写本机
+node scripts/probe.mjs help     # 探针需要扫码登录，凭证只写本机
+node scripts/test-trace.mjs    # 观看上报（live-trace E/X）：假 fetch 单测
+node scripts/test-clean.mjs    # 日志轮转/计划裁剪
+node scripts/test-card-parse.mjs  # 预约卡片/时间解析
+node scripts/test-client-register.mjs  # client 注册槽位冒烟
 ```
 
 ## License

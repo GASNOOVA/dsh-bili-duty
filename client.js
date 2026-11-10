@@ -130,8 +130,7 @@ select[data-bd-input]{cursor:pointer;}
     }
     const WH_RE = /^(?:[01]?\d|2[0-3]):[0-5]\d\s*-\s*(?:(?:[01]?\d|2[0-3]):[0-5]\d|24:00)$/
     const optionPairs = (pairs) => pairs.map(([value, label]) => ({ value, label }))
-    const QN_OPTIONS = optionPairs([['80', '80（最低，最省流量）'], ['150', '150（默认）'], ['250', '250（P0 实测常回落到这档）'], ['400', '400（较清晰，更耗流量）']])
-    const TASK_OPTIONS = optionPairs([['all', '全部任务（按顺序跑一遍）'], ['watch', '观看直播（拉流几分钟）'], ['danmaku', '发送弹幕（含进房问候）'], ['like', '点赞（一轮）'], ['gift', '打赏（1 个粉丝团灯牌）']])
+    const TASK_OPTIONS = optionPairs([['all', '全部任务（按顺序跑一遍）'], ['watch', '观看直播（上报心跳）'], ['danmaku', '发送弹幕（含进房问候）'], ['like', '点赞（一轮）'], ['gift', '打赏（1 个粉丝团灯牌）']])
     const TASK_LABEL = Object.fromEntries(TASK_OPTIONS.map((o) => [o.value, o.label]))
     const PLAN_TONE = { pending: 'idle', fired: 'live', missed: 'bad', cancelled: 'idle', done: 'ok' }
     const PLAN_LABEL = { pending: '等待中', fired: '已进房', missed: '已错过', cancelled: '已取消', done: '已完成' }
@@ -396,6 +395,12 @@ select[data-bd-input]{cursor:pointer;}
             : '暂无（没有在播的主播，或还没到检查时间）'),
           visit ? h(Tag, { tone: 'bad' }, '任务房') : null,
           visit ? h('span', { 'data-bd-note': '' }, `${visit.name || '未知主播'} · ${visit.why || '补任务'}`) : null),
+        st.watch ? h(Row, { style: { marginTop: '6px' } },
+          h(Tag, { tone: st.watch.error ? 'bad' : (st.watch.running ? 'ok' : 'idle') }, '观看上报'),
+          h('span', { 'data-bd-note': '' }, `已上报 ${st.watch.reportedMins || 0} 分`
+            + (st.watch.task ? ' · 今日 ' + st.watch.task : '')
+            + (st.watch.intervalSec ? ' · 心跳 ' + st.watch.intervalSec + 's' : '')
+            + (st.watch.error ? ' · ' + st.watch.error : ''))) : null,
         st.lastError ? h('div', { 'data-bd-msg': '', 'data-tone': 'warn', style: { marginTop: '10px' } }, '⚠ 最近错误：' + st.lastError) : null,
         h(Row, { style: { marginTop: '12px' } },
           h('button', { 'data-bd-btn': '', disabled: busy === 'tick', onClick: onTick }, busy === 'tick' ? '检查中…' : '立即检查'),
@@ -868,7 +873,7 @@ select[data-bd-input]{cursor:pointer;}
       return h(Section, { title: '任务设置' },
         h(Note, null, '开关点击即保存；数字、文本和下拉改动留在本地，滚到页面底部点「保存全部设置」才生效。所有数字在保存时会按提示范围自动修正。'),
         h(ToggleRow, {
-          label: '观看直播', note: '进房后拉一路低清晰度流保持在线，用于平台统计观看时长；任务房不拉流。',
+          label: '观看直播', note: '进房后用网页端 live-trace 心跳上报观看时长（连续 15 分钟算 1 轮，每天最多 10 轮）；不再拉流，省流量。任务房不上报。',
           on: form.taskWatch !== false, onChange: (v) => saveToggle('taskWatch', v, v ? '已开启观看任务' : '已关闭观看任务'), disabled: saving,
         }),
         h(ToggleRow, {
@@ -882,13 +887,6 @@ select[data-bd-input]{cursor:pointer;}
         h(ToggleRow, {
           label: '打赏粉丝团灯牌', note: '默认关闭。每房每天最多 1 次「粉丝团灯牌」，价格硬上限 1 电池；余额不足自动跳过，绝不自动充值。',
           on: form.taskGift === true, onChange: (v) => saveToggle('taskGift', v, v ? '已开启打赏任务（请确认已了解风险）' : '已关闭打赏任务'), disabled: saving,
-        }),
-        h(Sub, null, '观看'),
-        h(SelectField, {
-          label: '拉流清晰度', value: form.watchQn,
-          onChange: (v) => setForm((f) => ({ ...f, watchQn: v })),
-          options: QN_OPTIONS,
-          note: '数字越大越清晰也越耗流量；平台可能把请求档位回落到 250（P0 实测）。',
         }),
         h(Sub, null, '弹幕'),
         h(ToggleRow, {

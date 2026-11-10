@@ -5,10 +5,10 @@
  *   1. 自动模式：北京时间 08:00–24:00 每 15 分钟查一遍谁开播，进主看房挂着（陪伴）；
  *   2. 手动模式：你在设置页加一条「计划」（主播 + 开播时间），提前 10 分钟进房等待，
  *      到点仍未开播最多等 10 分钟；计划不受工作时间限制；
- *   3. 每日任务：观看直播（低清流）、发送弹幕（进房问候 + AI 智能弹幕）、点赞
+ *   3. 每日任务：观看直播（live-trace 心跳上报）、发送弹幕（进房问候 + AI 智能弹幕）、点赞
  *      （每 10 分钟一轮 300 次，按房间下发的批次/间隔上限切批）、打赏（每房每天
  *      1 个「粉丝团灯牌」，1 电池，余额不足跳过，不自动充值）；
- *   4. 其它在播主播有未完成任务时，异步去补任务（不打断主看房的拉流与弹幕）。
+ *   4. 其它在播主播有未完成任务时，异步去补任务（不打断主看房的观看上报与弹幕）。
  *
  * 家目录：`$DSH_HOME/bili-duty/`
  *   config.json  设置页写的那份（含主播名单、计划、任务参数）
@@ -40,7 +40,7 @@ import {
   isRiskCode,
   sendGift,
 } from './lib/duty-actions.mjs'
-import { pullStream } from './lib/duty-watch.mjs'
+import { getTraceRoom, getWatchTaskProgress, watchTrace } from './lib/duty-trace.mjs'
 import { extractCardReserve, parseLiveCard } from './lib/duty-card.mjs'
 import { DanmakuClient, getRoomByUid, getRoomInfo, sendDanmaku } from './lib/live.mjs'
 import { generateQr, pollQr, qrSvg, whoAmI } from './lib/auth.mjs'
@@ -375,7 +375,7 @@ export function apply(ctx) {
     client.start().catch((e) => log(`弹幕连接失败：${String(e?.message || e)}`))
   }
 
-  /* ── 观看直播：拉低清流 ── */
+  /* ── 观看直播：live-trace E/X 心跳上报（进房/弹幕/拉流都不算观看时长） ── */
   function stopWatch() {
     const w = rt.watch
     rt.watch = null
@@ -388,22 +388,61 @@ export function apply(ctx) {
     const cred = loadCred()
     if (!cred) return
     const ctl = new AbortController()
-    const w = { roomId: meta.realRoomId, ctl, startedAt: Date.now(), bytes: 0, lastTickAt: Date.now(), running: true }
+    const w = {
+      roomId: meta.realRoomId, ctl, startedAt: Date.now(), running: true, finished: false,
+      reportedSec: 0, intervalSec: 0, task: '', error: '', nextRetryAt: 0,
+    }
     rt.watch = w
-    log(`开始观看直播间 ${meta.realRoomId} 的直播流（qn=${cfg.watchQn}）`)
-    pullStream(cred, meta.realRoomId, {
-      qn: cfg.watchQn,
-      maxMs: 8 * 3600 * 1000,
-      signal: ctl.signal,
-      onProgress: ({ bytes }) => { if (rt.watch === w) w.bytes = bytes },
-      onLog: (m) => log(m),
-    }).then((r) => {
-      if (rt.watch !== w) return
-      w.running = false
-      if (!r?.aborted) log(`观看流结束：${r?.seconds || 0}s / ${Math.round((r?.bytes || 0) / 1024)}KB${r?.message ? '·' + r.message : ''}`)
-    }).catch((e) => {
-      if (rt.watch === w) { w.running = false; log(`观看流异常：${String(e?.message || e)}`) }
-    })
+    log(`开始观看上报：房间 ${meta.realRoomId}（live-trace 心跳）`)
+    ;(async () => {
+      try {
+        const room = await getTraceRoom(cred, meta.realRoomId)
+        if (rt.watch !== w) return
+        w.uid = room.uid
+        w.intervalSec = 0
+        // 今日观看任务已完成（每日上限 10 轮）就不再空挂心跳
+        try {
+          const task = await getWatchTaskProgress(cred, room.uid)
+          w.task = task.subTitle || `${task.current}/${task.total}`
+          if (task.total > 0 && task.current >= task.total) {
+            w.finished = true
+            w.running = false
+            log(`今日观看任务已完成（${task.subTitle}），跳过观看上报`)
+            return
+          }
+          if (task.subTitle) log(`今日观看任务进度：${task.subTitle}`)
+        } catch (e) {
+          log(`查观看任务进度失败：${String(e?.message || e)}`)
+        }
+        const r = await watchTrace({
+          cred,
+          room,
+          signal: ctl.signal,
+          onLog: (m) => { if (rt.watch === w) log(m) },
+          onSession: ({ intervalSec }) => { if (rt.watch === w) w.intervalSec = intervalSec },
+          onTick: (sec) => {
+            if (rt.watch !== w) return
+            w.reportedSec += sec
+            store.markWatch(meta.realRoomId, sec)
+            store.save()
+          },
+        })
+        if (rt.watch === w) {
+          w.running = false
+          if (!r.aborted) {
+            w.nextRetryAt = Date.now() + 60_000
+            log(`观看上报中断：已上报 ${Math.round(r.watchedSec / 60)} 分钟（房间 ${meta.realRoomId}${r.reason ? '·' + r.reason : ''}），1 分钟后重试`)
+          }
+        }
+      } catch (e) {
+        if (rt.watch === w) {
+          w.running = false
+          w.error = String(e?.message || e)
+          w.nextRetryAt = Date.now() + 60_000
+          if (!ctl.signal.aborted) log(`观看上报异常：${w.error}（1 分钟后重试）`)
+        }
+      }
+    })()
   }
 
   /* ── 发一条弹幕（统一限速/计数） ── */
@@ -719,7 +758,10 @@ export function apply(ctx) {
     log(`进入主看房 ${meta.realRoomId}「${meta.name || '?'}」${meta.title ? '：' + meta.title : ''}（${reason || '自动'}）`)
     {
       const cred = loadCred()
-      if (cred) await enterRoom(cred, meta.realRoomId).catch(() => {})
+      if (cred) {
+        // 进房接口只影响「在线状态」，失败不阻塞观看上报，但记一条日志便于排查
+        try { await enterRoom(cred, meta.realRoomId) } catch (e) { log(`进房接口失败（不影响观看上报）：${String(e?.message || e)}`) }
+      }
     }
     startDanmaku(rt.main)
     startWatch(rt.main)
@@ -1039,12 +1081,8 @@ export function apply(ctx) {
         await ensureMainAlive()
       }
       if (rt.main) {
-        // 拉流断了就重连
-        if (rt.watch && !rt.watch.running) startWatch(rt.main)
-        if (rt.watch) {
-          const dt = Math.max(0, Math.round((now - rt.watch.lastTickAt) / 1000))
-          if (dt > 0) { store.markWatch(rt.main.realRoomId, dt); rt.watch.lastTickAt = now; store.save() }
-        }
+        // 观看心跳断了就重连（每天观看任务已完成时不再重试）
+        if (rt.watch && !rt.watch.running && !rt.watch.finished && now >= (rt.watch.nextRetryAt || 0)) startWatch(rt.main)
         await stepGreeting()
         await maybeAiDanmaku()
         if (cfg.taskLike && now - rt.lastLikeAt >= cfg.likeRoundMs && !rt.likeRunning) {
@@ -1114,6 +1152,14 @@ export function apply(ctx) {
           workHours: cfg.workHours,
         },
         main: rt.main ? { mid: rt.main.mid, name: rt.main.name, roomId: rt.main.realRoomId, title: rt.main.title, since: rt.main.since } : null,
+        watch: rt.watch ? {
+          roomId: rt.watch.roomId,
+          running: Boolean(rt.watch.running),
+          reportedMins: Math.round((rt.watch.reportedSec || 0) / 60),
+          intervalSec: rt.watch.intervalSec || 0,
+          task: rt.watch.task || '',
+          error: rt.watch.error || '',
+        } : null,
         waiting: rt.waiting ? { mid: rt.waiting.plan?.mid, name: rt.waiting.plan?.name, at: rt.waiting.plan?.at } : null,
         visiting: rt.visiting ? { mid: rt.visiting.mid, name: rt.visiting.name, roomId: rt.visiting.realRoomId, why: rt.visiting.why.join('、'), since: rt.visiting.since } : null,
         plans: (cfg.plans || []).map((p) => ({ id: p.id, mid: p.mid, name: p.name, at: p.at, status: p.status })),
