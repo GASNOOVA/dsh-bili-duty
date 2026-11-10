@@ -2,7 +2,7 @@
  * scripts/test-card-parse.mjs —— 预约卡片直读解析的离线测试
  * 用法：node scripts/test-card-parse.mjs
  */
-import { parseLiveCard, extractCardReserve, parseCardTime } from '../lib/duty-card.mjs'
+import { parseLiveCard, extractCardReserve, parseCardTime, parseReserveDescTime } from '../lib/duty-card.mjs'
 
 const bj = (s) => Date.parse(s + '+08:00')
 const cases = []
@@ -58,6 +58,47 @@ const ex = extractCardReserve(dyn)
 ok('转发动态卡片抽取', { mid: ex.mid, name: ex.name, title: ex.title, at: ex.at, side: ex.side, cardType: ex.cardType }, {
   mid: '672353429', name: '贝拉kira', title: '水商生活', at: new Date(bj('2026-11-17 12:00')).toISOString(), side: 'orig', cardType: 'live_rcmd',
 })
+
+// 7) 新版预约卡：additional.type=ADDITIONAL_TYPE_RESERVE（desc1.text 才是时间）
+const fixedNow = bj('2026-11-10 12:00')
+ok('desc 时间 11-17 11:00', parseReserveDescTime('11-17 11:00 直播', fixedNow), bj('2026-11-17 11:00'))
+ok('desc 时间 11月15日 11:00', parseReserveDescTime('11月15日 11:00', fixedNow), bj('2026-11-15 11:00'))
+ok('desc 时间 11/17 11:00', parseReserveDescTime('11/17 11:00', fixedNow), bj('2026-11-17 11:00'))
+ok('desc 时间 今天/明天', [parseReserveDescTime('今天 20:00', fixedNow), parseReserveDescTime('明天 19:30', fixedNow)], [bj('2026-11-10 20:00'), bj('2026-11-11 19:30')])
+ok('desc 跨年 01-05', parseReserveDescTime('01-05 11:00', fixedNow), bj('2027-01-05 11:00'))
+ok('desc 无时间 NaN', Number.isNaN(parseReserveDescTime('预约中', fixedNow)), true)
+
+const dyn2 = {
+  id_str: '2', type: 'DYNAMIC_TYPE_FORWARD',
+  modules: { module_dynamic: { desc: { text: '转发动态' }, additional: null }, module_author: { name: '我', mid: 23209281 } },
+  orig: {
+    type: 'DYNAMIC_TYPE_DRAW',
+    modules: {
+      module_author: { name: '嘉然今天吃什么', mid: 672328094 },
+      module_dynamic: {
+        major: { type: 'MAJOR_TYPE_OPUS' },
+        additional: { type: 'ADDITIONAL_TYPE_RESERVE', reserve: { title: '直播预约：【突击】鸣潮3.8！', desc1: { text: '11-17 11:00 直播' }, desc2: { text: '2289人预约' }, rid: 5867427, up_mid: '672328094', reserve_total: 2289 } },
+      },
+    },
+  },
+}
+const ex2 = extractCardReserve(dyn2)
+ok('新版预约卡抽取', { mid: ex2.mid, name: ex2.name, title: ex2.title, at: ex2.at, side: ex2.side, cardType: ex2.cardType }, {
+  mid: '672328094', name: '嘉然今天吃什么', title: '直播预约：【突击】鸣潮3.8！', at: new Date(bj('2026-11-17 11:00')).toISOString(), side: 'orig', cardType: 'additional_reserve',
+})
+
+const dyn3 = {
+  id_str: '3', type: 'DYNAMIC_TYPE_FORWARD',
+  modules: { module_dynamic: {}, module_author: { name: '我', mid: 23209281 } },
+  orig: {
+    modules: {
+      module_author: { name: '乃琳Queen', mid: 672342685 },
+      module_dynamic: { additional: { type: 'ADDITIONAL_TYPE_RESERVE', reserve: { title: '直播预约：【突击】鸣潮3.8主线！', desc1: { text: '11-15 11:00 直播' }, up_mid: '672342685', rid: 5869258 } } },
+    },
+  },
+}
+const ex3 = extractCardReserve(dyn3)
+ok('新版预约卡（无 desc2/status）', { mid: ex3.mid, at: ex3.at, cardType: ex3.cardType }, { mid: '672342685', at: new Date(bj('2026-11-15 11:00')).toISOString(), cardType: 'additional_reserve' })
 
 const failed = cases.filter((c) => !c.pass)
 console.log(`\n${cases.length - failed.length}/${cases.length} passed`)

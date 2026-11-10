@@ -443,3 +443,32 @@
   - 官方任务接口 `GetActivatedMedalInfo` 读数：观看任务从「每日上限 **0/10**，done:false」变为「每日上限 **1/10**」；
   - 亲密度 264 → 271（同一时间段其余弹幕/点赞也在涨，观看轮次已确认入账）；
   - 结论：E/X 心跳是观看任务的唯一有效上报方式；v1.10.0 的「进房 + 弹幕 + 拉流」3 小时 0/10 已复现为反例。
+
+## 16. v1.11.1 预约卡片兼容修复（2026-11-10，实测）
+
+### 16.1 现象与根因
+- 用户「读取动态 → 导入」失败：动态列表读到了，但 ①预约识别区域为空、②日程表也没有图片，无法导入。
+- 抓取真实动态（`/x/polymer/web-dynamic/v1/feed/space`）发现 B站 新版预约卡放在
+  `module_dynamic.additional`：`{type:'ADDITIONAL_TYPE_RESERVE', reserve:{title, desc1:{text:'11-17 11:00 直播'},
+  desc2:{text:'2289人预约'}, up_mid:'672328094', rid:5867427, reserve_total:2289, button:{...}}}`。
+  - 没有 `live_start_time` 这类结构化时间字段，时间只在 `desc1.text` 中文案里；
+  - 主播 UID 字段是 `up_mid`，没有 `uname`（名字在 orig 的 `module_author.name`）；
+  - `reserve.rid` 是预约 ID，不是直播间号。
+- 旧 `extractCardReserve` 只认 `major.live_rcmd` / `major.live`，对 `additional` 调 `parseLiveCard` 又找不到时间字段，返回 null → 区域列表为空。
+
+### 16.2 实现
+- `lib/duty-card.mjs`：
+  - 新增 `parseReserveDescTime(text, nowMs)`：解析「11-17 11:00 直播」「11月15日 11:00」「11/17 11:00」「今天/明天/后天 HH:mm」；无年份按北京时间当年补，落在 2 天前之前则视为跨年 +1；
+  - 新增 `parseReserveAdditional(additional, author, nowMs)`：取 `reserve.up_mid/title/desc1.text`，roomId 留空（房间由主播 UID 解析），`cardType='additional_reserve'`；
+  - `extractCardReserve` 每个 side（self/orig）先判断 `additional`（`ADDITIONAL_TYPE_RESERVE` 或带 `reserve`），再走原有 `live_rcmd` 逻辑。
+- `index.js`：
+  - 卡片直读结果 `name` 改为「匹配到名单时用名单名」，避免 self 侧转发把名字写成自己；
+  - `mapDynamicItem` 增加 `additionalDebug`：解析失败时把 additional 原文带进 `debugCard`，便于以后适配。
+- `client.js`：① 的说明补充新旧卡片格式；动态列表在预约卡上显示 `【预约标题】`。
+
+### 16.3 验证
+- 真实动态（用户转发 2 条）：
+  - 嘉然「直播预约：【突击】鸣潮3.8！」`11-17 11:00` → `2026-11-17T03:00:00.000Z`，mid 672328094；
+  - 乃琳「直播预约：【突击】鸣潮3.8主线！」`11-15 11:00` → `2026-11-15T03:00:00.000Z`，mid 672342685；
+  - 两条均匹配名单、可导入（`node .probe/import-repro.mjs`）。
+- 单测：`node scripts/test-card-parse.mjs` **17/17**（新增 8 条：desc 时间 4 种格式、今天/明天、跨年、无时间、新版卡抽取×2）。

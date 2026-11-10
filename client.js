@@ -744,7 +744,8 @@ select[data-bd-input]{cursor:pointer;}
         if (!pool.length) return [h(Note, { key: kind + '-empty' }, kind === 'reserve' ? '没有可直读的预约卡片动态' : '没有带图片的动态')]
         return pool.map((d) => h('div', { 'data-bd-plan': '', key: kind + '-' + d.id },
           h('span', { 'data-bd-plan-time': '' }, d.publishedAt ? fmtPlanTime(new Date(d.publishedAt).toISOString()) : '时间未知'),
-          h('span', { 'data-bd-plan-name': '', title: d.text || '' }, (d.text || '（无文字）').slice(0, 56) + ((d.images || []).length ? `　[图×${d.images.length}]` : '')),
+          h('span', { 'data-bd-plan-name': '', title: d.reserve?.title || d.text || '' },
+            ((d.reserve && d.reserve.title ? `【${d.reserve.title}】` : '') + (d.text || '（无文字）')).slice(0, 56) + ((d.images || []).length ? `　[图×${d.images.length}]` : '')),
           d.reserve ? h(Tag, { tone: 'live' }, '预约卡片') : null,
           h('button', {
             'data-bd-btn': '', 'data-mini': '', disabled: dynLoading !== '',
@@ -857,7 +858,7 @@ select[data-bd-input]{cursor:pointer;}
           h(Note, null, '先读取空间里的动态；下面按「预约（文字/卡片）」和「日程表（图片）」分成两个区域，各自识别、各自导入。')),
         dynMsg ? h('div', { 'data-bd-msg': '', 'data-tone': dynMsg.tone }, dynMsg.text) : null,
         h(Sub, null, '① 预约识别（卡片）'),
-        h(Note, null, '只识别动态里的直播预约卡片：结构化 JSON 直接解析，不用模型、毫秒级。没有预约卡片的文字动态不会出现在这里。'),
+        h(Note, null, '只识别动态里的直播预约卡片：结构化 JSON 直接解析，不用模型、毫秒级。支持旧版 live_rcmd 卡和新版「直播预约」卡（additional.reserve，时间在文案里）。没有预约卡片的文字动态不会出现在这里。'),
         dyns ? h('div', { 'data-bd-list': '' }, areaList('reserve')) : null,
         ...areaResult('reserve'),
         h(Sub, null, '② 日程表识别（图片）'),

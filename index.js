@@ -142,6 +142,13 @@ function inWorkHours(range, ms = Date.now(), tz = 'beijing') {
 }
 
 
+/** 预约卡解析失败时，把 additional 原文带出来，便于以后适配新字段 */
+function additionalDebug(item) {
+  const add = item?.orig?.modules?.module_dynamic?.additional || item?.modules?.module_dynamic?.additional
+  if (!add) return ''
+  try { return JSON.stringify(add).slice(0, 1500) } catch { return '' }
+}
+
 /** 把 B站 动态 item 归一成 {id,type,publishedAt,text,images,author,forward}；转发动态会合并 orig 原文 */
 function mapDynamicItem(it) {
   const o = it && typeof it === 'object' ? it : {}
@@ -190,7 +197,9 @@ function mapDynamicItem(it) {
     forward: orig ? { author: orig.author, text: orig.text, card: orig.card } : null,
     reserve,
     // 有卡片但解析失败时，把原始 content 带出来，便于以后适配字段
-    debugCard: !reserve && (own.card || (orig && orig.card)) ? String(own.card || (orig && orig.card)).slice(0, 1500) : '',
+    debugCard: !reserve && (own.card || (orig && orig.card))
+      ? String(own.card || (orig && orig.card)).slice(0, 1500)
+      : (!reserve ? additionalDebug(o) : ''),
   }
 }
 
@@ -1333,7 +1342,7 @@ export function apply(ctx) {
           return a1 && a2 && (a1 === a2 || a1.includes(a2) || a2.includes(a1))
         })
         const items = [{
-          name: card.name || (hit ? hit.name : ''),
+          name: hit ? hit.name : (card.name || ''),
           mid: hit ? String(hit.mid) : String(card.mid || ''),
           matched: Boolean(hit),
           at: new Date(card.atMs).toISOString(),
