@@ -1247,7 +1247,7 @@ export function apply(ctx) {
         }
       }
       // ① 卡片直读：结构化 JSON，0 token
-      if (card && card.atMs) {
+      if (card && card.atMs && body.skipCard !== true) {
         const norm = (v) => String(v || '').replace(/\s+/g, '').toLowerCase()
         const hit = (cfg.streamers || []).find((x) => {
           if (card.mid && String(x.mid) === String(card.mid)) return true
