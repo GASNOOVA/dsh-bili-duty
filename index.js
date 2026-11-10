@@ -1268,6 +1268,14 @@ export function apply(ctx) {
         log(`动态卡片直读：${items[0].name || items[0].mid} · ${items[0].at}`)
         return sendJson(res, 200, { ok: true, source: 'card', sourceId, count: 1, items, textPreview: text.slice(0, 200) })
       }
+      // ①预约识别区域只支持卡片直读：cardOnly 时没有卡片直接返回，不再走文字 LLM
+      if (body.cardOnly === true) {
+        return sendJson(res, 200, {
+          ok: false,
+          error: '这条动态里没有直播预约卡片（①预约识别只支持卡片直读；文字内容请走②日程表识别或手动计划）',
+        })
+      }
+
       if (!text && !(images.length && body.withImages !== false)) {
         return sendJson(res, 200, {
           ok: false,

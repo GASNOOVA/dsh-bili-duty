@@ -671,7 +671,7 @@ select[data-bd-input]{cursor:pointer;}
         const loading = kind === 'reserve' ? 'parse-reserve' : 'parse-schedule'
         setDynLoading(loading); setDynMsg(null); bumpArea(kind, () => null)
         try {
-          const body = kind === 'reserve' ? { id, withImages: false } : { id, withImages: true, skipCard: true }
+          const body = kind === 'reserve' ? { id, withImages: false, cardOnly: true } : { id, withImages: true, skipCard: true }
           const r = await jpost('/dynamics/parse', body)
           if (!r || r.ok === false) throw new Error((r && r.error) || '识别失败')
           const items = Array.isArray(r.items) ? r.items : []
@@ -731,9 +731,9 @@ select[data-bd-input]{cursor:pointer;}
       /* 动态列表（kind: reserve=文字/卡片，schedule=带图片） */
       const areaList = (kind) => {
         const pool = (dyns || []).filter((d) => (kind === 'reserve'
-          ? (String(d.text || '').trim() || d.reserve)
+          ? Boolean(d.reserve)
           : (d.images || []).length > 0))
-        if (!pool.length) return [h(Note, { key: kind + '-empty' }, kind === 'reserve' ? '没有可识别的文字/卡片动态' : '没有带图片的动态')]
+        if (!pool.length) return [h(Note, { key: kind + '-empty' }, kind === 'reserve' ? '没有可直读的预约卡片动态' : '没有带图片的动态')]
         return pool.map((d) => h('div', { 'data-bd-plan': '', key: kind + '-' + d.id },
           h('span', { 'data-bd-plan-time': '' }, d.publishedAt ? fmtPlanTime(new Date(d.publishedAt).toISOString()) : '时间未知'),
           h('span', { 'data-bd-plan-name': '', title: d.text || '' }, (d.text || '（无文字）').slice(0, 56) + ((d.images || []).length ? `　[图×${d.images.length}]` : '')),
@@ -742,7 +742,7 @@ select[data-bd-input]{cursor:pointer;}
             'data-bd-btn': '', 'data-mini': '', disabled: dynLoading !== '',
             onClick: () => identify(kind, d.id),
           }, dynLoading === (kind === 'reserve' ? 'parse-reserve' : 'parse-schedule') ? '识别中…'
-            : (kind === 'reserve' ? (d.reserve ? '直接读取卡片' : '识别预约') : '识别日程表（图片）')),
+            : (kind === 'reserve' ? '直接读取卡片' : '识别日程表（图片）')),
           h('button', {
             'data-bd-btn': '', 'data-mini': '', 'data-danger': '', disabled: dynLoading !== '',
             onClick: () => removeDynamic(d.id),
@@ -848,8 +848,8 @@ select[data-bd-input]{cursor:pointer;}
           }, dynLoading === 'list' ? '读取中…' : '读取我的动态'),
           h(Note, null, '先读取空间里的动态；下面按「预约（文字/卡片）」和「日程表（图片）」分成两个区域，各自识别、各自导入。')),
         dynMsg ? h('div', { 'data-bd-msg': '', 'data-tone': dynMsg.tone }, dynMsg.text) : null,
-        h(Sub, null, '① 预约识别（文字 / 卡片）'),
-        h(Note, null, '识别文字动态或直播预约卡片里的单场预约。卡片是结构化 JSON，直接解析不用模型；纯文字动态用 deepseek-flash（max 推理）。'),
+        h(Sub, null, '① 预约识别（卡片）'),
+        h(Note, null, '只识别动态里的直播预约卡片：结构化 JSON 直接解析，不用模型、毫秒级。没有预约卡片的文字动态不会出现在这里。'),
         dyns ? h('div', { 'data-bd-list': '' }, areaList('reserve')) : null,
         ...areaResult('reserve'),
         h(Sub, null, '② 日程表识别（图片）'),
