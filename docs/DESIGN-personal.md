@@ -142,7 +142,7 @@
 
 **B. 智能弹幕**（开关默认开；默认「跟风复读」，可切「自由生成」）：
 
-**B1. 跟风复读（默认，2026-11-10 起纯脚本）**：从最近弹幕里取时间窗口（`aiFollowWindowMs`，默认 60s）内的文本做本地计数：同句出现 ≥ `aiFollowMinCount`（默认 3 次）时，取**出现次数最多**的那一句原样复制；同频次取最近出现的那句。**不调用 LLM**，0 token、不依赖模型可用性；窗口内没有明显刷屏则不发送。排除自己的弹幕、@、链接、加群/抽奖等广告文本；与上次发送相同的那句跳过。参数：`aiDanmakuMode`（follow/generate）、`aiFollowWindowMs`（20–300s）、`aiFollowMinCount`（2–20）。scripts/test-ai-follow.mjs 用假 ctx（模型一调用就抛错）验证 6 种情况：最高频胜出、同频次取最近、广告过滤、无刷屏不发、窗口太短不发、低于阈值不发，均 0 次模型调用。
+**B1. 跟风复读（默认，2026-11-10 起纯脚本）**：从最近弹幕里取时间窗口（`aiFollowWindowMs`，默认 60s）内的文本做本地计数：同句出现 ≥ `aiFollowMinCount`（默认 3 次）时，取**出现次数最多**的那一句原样复制；同频次取最近出现的那句。**不调用 LLM**，0 token、不依赖模型可用性；窗口内没有明显刷屏则不发送。排除自己的弹幕、@、链接、加群/抽奖等广告文本；**跟风模式不因与上次相同而跳过**（热点刷屏时同一句连续命中属正常，照常跟；该去重仅保留给自由生成）。参数：`aiDanmakuMode`（follow/generate）、`aiFollowWindowMs`（20–300s）、`aiFollowMinCount`（2–20）。scripts/test-ai-follow.mjs 用假 ctx（模型一调用就抛错）验证 6 种情况：最高频胜出、同频次取最近、广告过滤、无刷屏不发、窗口太短不发、低于阈值不发，均 0 次模型调用。
 
 **模型与成本（2026-11-10 调整）**：跟风复读已完全本地化，不再消耗 token。仍用 LLM 的只剩：自由生成弹幕、动态文字识别、日程表图片识别；固定走 `deepseek-official / deepseek-flash / reasoningEffort=low`（图片识别用 max），配置项 `llmProvider` / `llmModel` / `llmReasoningEffort`（effort 取值 off/low/high/max）。状态接口 `llm` 字段会返回 `reasoningEffort`，设置页调试区展示当前路由。
 
@@ -509,3 +509,11 @@
 - 客户端（client.js）：`onTick` 根据响应显示「已进入「主播」」「当前没有主播在播」「房间信息未就绪，请再点一次」等；非值守时段提示「手动检查，不受值守时段限制」。
 - 边界：自动模式的 08:00–24:00 行为不变（设计如此）；手动计划仍在 `waiting` 期间优先，不会被「立即检查」插队；插件不会因为到点下班主动离开已有主看房。
 - 单测：`scripts/test-manual-check.mjs` 假 ctx + 假 fetch（仅 672342685 在播），配置刻意落在值守时段外，断言 `/tick` 仍进入 22625027、返回 `manual:'entered'`、`outside:true`，且日志包含「手动检查：进入」；8 项断言通过。
+
+
+## 20. v1.11.5 跟风复读取消「与上次相同」去重（2026-11-11）
+
+- 动因：用户 m02056「调整智能跟风弹幕插件，不要因为与上一条重复就不发」。跟风复读的目标是复刻当前刷屏最多的一句；热点刷屏时该句很可能连续几轮都是最高频，如果按「与上次相同」跳过，反而会漏掉最该跟的风。
+- 实现（index.js `maybeAiDanmaku`）：重复判断改为 `if (!follow && rt.lastAiText && rt.lastAiText === clipped)`——跟风模式不再拦截；自由生成仍保留去重（模型写作时重复同一句没有意义）。
+- 其他限制不变：智能弹幕间隔（默认 300s）、每房每日上限（默认 100）、点赞/送礼/风控暂停、弹幕冷却、每日弹幕上限等仍生效；连续发送同一句仍受 B站 自身频率/风控约束。
+- 验证：`node --check` 通过；test-ai-follow / test-manual-check / test-trace / test-clean / test-attach-clean / test-card-parse / test-client-register 全部通过。

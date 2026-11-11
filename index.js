@@ -751,7 +751,9 @@ export function apply(ctx) {
       clipped = await generateAiDanmaku()
       if (!clipped) { log('AI 弹幕生成空结果（本轮跳过）'); return }
     }
-    if (rt.lastAiText && rt.lastAiText === clipped) { log(`智能弹幕与上次相同，跳过：「${clipped}」`); return }
+    // 跟风复读就是要「随大流」：热点刷屏时同一句可能连续命中，照样发；
+    // 只有自由生成保留「与上次相同就跳过」的去重。
+    if (!follow && rt.lastAiText && rt.lastAiText === clipped) { log(`智能弹幕与上次相同，跳过：「${clipped}」`); return }
     const r2 = await sendChat(m, clipped, follow ? '跟风弹幕' : 'AI 弹幕')
     if (r2.ok) {
       rt.aiSent[m.realRoomId] = aiCountOf(m.realRoomId) + 1
