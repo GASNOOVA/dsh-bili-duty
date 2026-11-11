@@ -915,14 +915,14 @@ select[data-bd-input]{cursor:pointer;}
           note: '每行一条，最多 20 行，每条不超过 20 字；重复行会被自动去掉。条数不够时循环使用。',
         }),
         h(ToggleRow, {
-          label: '智能弹幕（跟风复读 / 自由生成）', note: '跟风复读（默认）纯本地统计，不调用模型：取窗口内重复最多的一句原样复制；自由生成才调用模型。',
+          label: '智能弹幕（跟风复读 / 自由生成）', note: '跟风复读（默认）纯本地统计，不调用模型：从窗口内达到重复次数的句子里随机挑一句原样复制；自由生成才调用模型。',
           on: form.aiDanmaku !== false, onChange: (v) => saveToggle('aiDanmaku', v, v ? '已开启智能弹幕' : '已关闭智能弹幕'), disabled: saving,
         }),
         h(SelectField, {
           label: '弹幕模式', value: form.aiMode,
           onChange: (v) => setForm((f) => ({ ...f, aiMode: v })),
           options: optionPairs([['follow', '跟风复读（默认，本地统计，不调用模型）'], ['generate', '自由生成（调用模型，按直播内容写一句）']]),
-          note: '跟风复读：窗口内出现次数最多、且 ≥ 最少重复次数的那句直接原样发送；同频次取最近出现的。全部本地完成，不消耗 token、不依赖模型。',
+          note: '跟风复读：窗口内所有 ≥ 最少重复次数的句子进入候选池，每轮随机挑一句原样发送（不固定复读最高频那句）。全部本地完成，不消耗 token、不依赖模型。',
         }),
         form.aiMode === 'follow'
           ? h(FieldGrid, null,

@@ -644,8 +644,8 @@ export function apply(ctx) {
   }
 
   /* ── 智能弹幕（两种模式） ──
-   * follow  （默认）跟风复读：纯本地统计，不调用模型。取时间窗口内出现次数最多、
-   *           且达到 aiFollowMinCount 的原句，原样复制；没有明显刷屏就不发。
+   * follow  （默认）跟风复读：纯本地统计，不调用模型。从时间窗口内所有出现次数达到
+   *           aiFollowMinCount 的原句中随机挑一句，原样复制；没有合格候选就不发。
    * generate         自由生成：根据房间标题 + 最近弹幕让 LLM 写一句（仅此模式需要模型）。
    */
   function aiCountOf(realRoomId) { return Number(rt.aiSent[realRoomId]) || 0 }
@@ -677,7 +677,7 @@ export function apply(ctx) {
     return out
   }
 
-  /** 本地计数：窗口内出现次数最多的文本；同频次优先取最近一次出现的（更贴近当下正在刷的那句） */
+  /** 本地计数：返回频次排行 + 所有达到阈值的候选（候选按次数降序、同频次最近出现优先，仅供参考展示） */
   function localFollowTop(messages, minCount = cfg.aiFollowMinCount) {
     const stats = new Map()
     for (let i = 0; i < messages.length; i++) {
@@ -687,21 +687,24 @@ export function apply(ctx) {
       else stats.set(text, { text, count: 1, lastIndex: i })
     }
     const sorted = [...stats.values()].sort((a, b) => b.count - a.count || b.lastIndex - a.lastIndex)
-    const top = sorted[0] || null
+    const threshold = Math.max(2, minCount)
+    const candidates = sorted.filter((x) => x.count >= threshold)
     return {
       total: messages.length,
       top: sorted.slice(0, 8).map(({ text, count }) => ({ text, count })),
-      text: top && top.count >= Math.max(2, minCount) ? top.text : '',
-      count: top ? top.count : 0,
+      candidates: candidates.map(({ text, count }) => ({ text, count })),
+      threshold,
+      count: sorted[0] ? sorted[0].count : 0,
     }
   }
 
-  /** 跟风复读：纯本地统计（不调用模型），取窗口内出现次数最多且达到阈值的原句 */
+  /** 跟风复读：纯本地统计（不调用模型），从所有达到阈值的候选里随机挑一句（避免每轮都复读同一句） */
   function pickFollowDanmaku(extraMessages = null) {
     const stat = localFollowTop(followWindowMessages(Date.now(), cfg.aiFollowWindowMs, extraMessages))
     if (stat.total < 3) return { text: '', stat, why: '窗口内弹幕太少' }
-    if (!stat.text) return { text: '', stat, why: '没有达到阈值的刷屏弹幕' }
-    return { text: stat.text, stat, why: `本地计数最高（${stat.count} 次）` }
+    if (!stat.candidates.length) return { text: '', stat, why: '没有达到阈值的刷屏弹幕' }
+    const pick = stat.candidates[Math.floor(Math.random() * stat.candidates.length)]
+    return { text: pick.text, stat, why: `从 ${stat.candidates.length} 个合格候选中随机选择（这句 ${pick.count} 次）` }
   }
 
   /** 自由生成：根据房间标题 + 最近弹幕自己写一句（旧逻辑，保留作可选模式） */
@@ -1650,7 +1653,7 @@ export function apply(ctx) {
           why: r.why,
           windowSec: Math.round(cfg.aiFollowWindowMs / 1000),
           minCount: cfg.aiFollowMinCount,
-          local: { total: r.stat.total, top: r.stat.top },
+          local: { total: r.stat.total, top: r.stat.top, candidates: r.stat.candidates },
           main: rt.main ? rt.main.name : null,
           ms: Date.now() - t0,
         })

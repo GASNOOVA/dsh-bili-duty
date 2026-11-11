@@ -142,7 +142,7 @@
 
 **B. 智能弹幕**（开关默认开；默认「跟风复读」，可切「自由生成」）：
 
-**B1. 跟风复读（默认，2026-11-10 起纯脚本）**：从最近弹幕里取时间窗口（`aiFollowWindowMs`，默认 60s）内的文本做本地计数：同句出现 ≥ `aiFollowMinCount`（默认 3 次）时，取**出现次数最多**的那一句原样复制；同频次取最近出现的那句。**不调用 LLM**，0 token、不依赖模型可用性；窗口内没有明显刷屏则不发送。排除自己的弹幕、@、链接、加群/抽奖等广告文本；**跟风模式不因与上次相同而跳过**（热点刷屏时同一句连续命中属正常，照常跟；该去重仅保留给自由生成）。参数：`aiDanmakuMode`（follow/generate）、`aiFollowWindowMs`（20–300s）、`aiFollowMinCount`（2–20）。scripts/test-ai-follow.mjs 用假 ctx（模型一调用就抛错）验证 6 种情况：最高频胜出、同频次取最近、广告过滤、无刷屏不发、窗口太短不发、低于阈值不发，均 0 次模型调用。
+**B1. 跟风复读（默认，2026-11-10 起纯脚本）**：从最近弹幕里取时间窗口（`aiFollowWindowMs`，默认 60s）内的文本做本地计数：同句出现 ≥ `aiFollowMinCount`（默认 3 次）的句子都进入候选池，每轮**从候选池随机挑一句**原样复制（2026-11-11 起，不再固定最高频那句）。**不调用 LLM**，0 token、不依赖模型可用性；窗口内没有达到阈值的句子则不发送。排除自己的弹幕、@、链接、加群/抽奖等广告文本；**跟风模式不因与上次相同而跳过**（热点刷屏时同一句连续命中属正常，照常跟；该去重仅保留给自由生成）。参数：`aiDanmakuMode`（follow/generate）、`aiFollowWindowMs`（20–300s）、`aiFollowMinCount`（2–20）。scripts/test-ai-follow.mjs 用假 ctx（模型一调用就抛错）验证：单候选必选、广告过滤、无刷屏/窗口太短/低于阈值不发（确定性 5 例）+ 多候选/同频候选随机覆盖（各 60 轮，断言候选集内且全部候选都出现过），共 499 项断言、0 次模型调用。
 
 **模型与成本（2026-11-10 调整）**：跟风复读已完全本地化，不再消耗 token。仍用 LLM 的只剩：自由生成弹幕、动态文字识别、日程表图片识别；固定走 `deepseek-official / deepseek-flash / reasoningEffort=low`（图片识别用 max），配置项 `llmProvider` / `llmModel` / `llmReasoningEffort`（effort 取值 off/low/high/max）。状态接口 `llm` 字段会返回 `reasoningEffort`，设置页调试区展示当前路由。
 
@@ -517,3 +517,15 @@
 - 实现（index.js `maybeAiDanmaku`）：重复判断改为 `if (!follow && rt.lastAiText && rt.lastAiText === clipped)`——跟风模式不再拦截；自由生成仍保留去重（模型写作时重复同一句没有意义）。
 - 其他限制不变：智能弹幕间隔（默认 300s）、每房每日上限（默认 100）、点赞/送礼/风控暂停、弹幕冷却、每日弹幕上限等仍生效；连续发送同一句仍受 B站 自身频率/风控约束。
 - 验证：`node --check` 通过；test-ai-follow / test-manual-check / test-trace / test-clean / test-attach-clean / test-card-parse / test-client-register 全部通过。
+
+
+## 21. v1.11.6 跟风复读候选池随机选择（2026-11-11）
+
+- 动因：用户 m02103「从所有满足条件的后选中随机选择一个而不是每次都选择重复次数最高的」。固定取最高频会导致每轮都复读同一句，跟风感变差。
+- 实现（index.js）：
+  - `localFollowTop` 返回 `candidates`：所有 `count >= max(2, aiFollowMinCount)` 的句子（仍按次数、最近出现排序，仅用于展示/调试），`top` 保留前 8 名。
+  - `pickFollowDanmaku`：`total >= 3` 且候选非空时，用 `Math.random()` 从 `candidates` 里等概率抽一句；`why` 改为「从 N 个合格候选中随机选择（这句 X 次）」。
+  - `/ai-test` 的 `local` 字段新增 `candidates`，方便调试。
+- UI（client.js）：跟风说明改为「窗口内所有 ≥ 最少重复次数的句子进入候选池，每轮随机挑一句」。
+- 测试（scripts/test-ai-follow.mjs）：保留确定性用例（单候选必选、广告过滤、无刷屏、窗口太短、低于阈值不发），新增两组随机覆盖——3 候选各抽 60 轮、2 个同频候选各抽 60 轮，断言结果都在候选集内、候选数正确、且每个候选都出现过；同时断言 0 次模型调用。499 项断言全过。
+- 注意：候选池每轮按当前窗口重新统计；随机只改变「挑哪句」，不改变阈值、间隔、每日上限与风控限制。
