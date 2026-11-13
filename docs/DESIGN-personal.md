@@ -540,3 +540,14 @@
   - `index.js` 新增 `beijingDateTime()`；计划新增/删除/清空/预约导入的日志都带北京时间字符串，便于以后排查「计划是否被删掉」。
 - 测试：`scripts/test-plan-time.mjs`（13 项断言全过）：add 持久化绝对时刻、import 按 mid+at 去重、导入/添加/删除日志含「北京时间 11-14 03:00」、client 源码使用 +8 偏移且输出「（北京时间）」后缀。
 - 结论：时间解析与存储无需修改；以后所有面向用户的计划时间都以北京时间展示，避免服务器（UTC）/浏览器（Berlin）时区差异造成误导。
+
+## 23. v1.11.8 导入的计划显示预约标题（2026-11-13）
+
+- 动因：用户 m02404 希望在导入的计划里直接看到预约直播的标题（如「直播预约：【突击】战双·流光抛诸寰宇」），而不只是主播名和时间。
+- 数据来源：动态预约卡片直读的 items 本来就带 `title`（旧版 `major.live_rcmd` 与新版 `additional.reserve.title` 都有）；日程表图片识别结果也带节目名。此前客户端导入时只发送 `{ mid, name, at }`，标题被丢弃。
+- 实现：
+  - `client.js`：`importArea` 导入时发送 `title`；计划卡片在第二行渲染 `[data-bd-plan-title]`（灰色小字、单行省略、hover 看全文）；导入结果提示支持「补充标题 N 条」。
+  - `index.js`：`POST /plans` 的 `import` 保存 `title`（截断 80 字）；若 `mid+at` 命中已存在但无标题的旧计划，则顺便补上标题并计入 `updated`（重复导入同一卡片可给旧计划补标题）；`add` 也接受可选 `title`；`/status` 的 plans 映射返回 `title`；导入日志记录「补充标题 N 条」。
+  - `lib/duty-config.mjs`：`normalizePlans` 用 `cleanStr(item.title, 80)` 保留标题，重启后不丢。
+- 测试：`scripts/test-plan-time.mjs` 扩展到 20 项断言（新增：标题持久化、旧计划补标题、导入日志、/status 带 title、normalizePlans 截断 80、client 导入带 title、计划卡片渲染标题），全部通过。
+- 结论：预约标题会随计划持久化，并在计划卡片第二行展示；旧计划只要重新导入同一卡片即可补上标题。

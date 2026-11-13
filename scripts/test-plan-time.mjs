@@ -1,12 +1,14 @@
 /**
- * scripts/test-plan-time.mjs —— 计划时间按北京时间处理/展示的回归测试
+ * scripts/test-plan-time.mjs —— 计划时间/标题的回归测试
  * 用法：node scripts/test-plan-time.mjs
  *
  * 覆盖：
  *  1) POST /plans add 保存的是绝对时刻（ISO），配置里读回一致；
- *  2) POST /plans import 去重（mid+at）并持久化；
- *  3) 计划增删日志带「北京时间」与北京时间字符串；
- *  4) client.js 不再用浏览器本地时区格式化计划时间（回归到 13日20:00 的 bug）。
+ *  2) POST /plans import 去重（mid+at）并持久化，预约标题一起保存；
+ *  3) 导入到已存在但无标题的旧计划时，可以补上标题（updated）；
+ *  4) /status 的 plans 映射带 title，normalizePlans 保留并截断标题；
+ *  5) 计划增删日志带「北京时间」与北京时间字符串；
+ *  6) client.js 不再用浏览器本地时区格式化计划时间（回归到 13日20:00 的 bug），并渲染标题。
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -43,6 +45,8 @@ writeFileSync(join(HOME, 'bili-duty', 'credential.json'), JSON.stringify(cred, n
 // 贝拉预约：B站 卡片文案「明天 03:00 直播」解析出的绝对时刻（北京 2026-11-14 03:00 = UTC 11-13 19:00）
 const BJ_AT = '2026-11-13T19:00:00.000Z'
 const NAI_AT = '2026-11-14T19:00:00.000Z'
+const BELLA_TITLE = '直播预约：【突击】战双·流光抛诸寰宇'
+const NAI_TITLE = '直播预约：【测试】乃琳专场'
 
 const WBI_IMG = 'a'.repeat(64)
 const WBI_SUB = 'b'.repeat(64)
@@ -95,12 +99,12 @@ const WBI_AT_NOW = Date.now()
 r = await call('POST', '/api/bili-duty/plans', {
   action: 'import',
   items: [
-    { mid: '672353429', name: '贝拉kira', at: BJ_AT },
-    { mid: '672342685', name: '乃琳Queen', at: NAI_AT },
+    { mid: '672353429', name: '贝拉kira', title: BELLA_TITLE, at: BJ_AT },
+    { mid: '672342685', name: '乃琳Queen', title: NAI_TITLE, at: NAI_AT },
   ],
 })
 if (!r.ok) throw new Error('import 失败: ' + JSON.stringify(r))
-const importResult = { added: r.added, skipped: r.skipped }
+const importResult = { added: r.added, skipped: r.skipped, updated: r.updated }
 const savedAfterImport = readCfg().plans || []
 const log = readFileSync(join(HOME, 'bili-duty', 'live.log'), 'utf8').replaceAll(WBI_AT_NOW, '')
 
@@ -108,6 +112,12 @@ const addLogLine = log.split('\n').find((x) => x.includes('手动计划已添加
 const importLogLine = log.split('\n').find((x) => x.includes('从预约导入计划')) || ''
 const bellaAfterImport = savedAfterImport.find((p) => p.at === BJ_AT)
 const naiSaved = savedAfterImport.find((p) => p.mid === '672342685' && p.at === NAI_AT)
+
+// 2.5) /status 的 plans 必须带 title；normalizePlans 保留并截断 title
+const statusR = await call('GET', '/api/bili-duty/status')
+const statusPlan = (statusR.plans || []).find((p) => p.mid === '672342685' && p.at === NAI_AT)
+const { normalizeConfig } = await import('../lib/duty-config.mjs')
+const normalizedTitle = normalizeConfig({ plans: [{ mid: '672353429', name: '贝拉kira', at: BJ_AT, title: 'T'.repeat(100) }] }).plans[0]?.title
 
 // 3) 删除计划
 r = await call('POST', '/api/bili-duty/plans', { action: 'remove', id: savedBella?.id || 'none' })
@@ -125,7 +135,12 @@ const asserts = [
   ['持久化的是绝对时刻（19:00Z = 北京 11-14 03:00）', savedBella?.at === BJ_AT],
   ['导入去重：贝拉同一场未重复新增（added=1, skipped=1）', importResult.added === 1 && importResult.skipped === 1],
   ['导入后贝拉计划只存在一条', savedAfterImport.filter((p) => p.at === BJ_AT).length === 1 && Boolean(bellaAfterImport)],
-  ['导入新增了乃琳那场', Boolean(naiSaved)],
+  ['旧计划没有标题时补上标题（updated=1）', importResult.updated === 1],
+  ['贝拉计划标题已持久化', bellaAfterImport?.title === BELLA_TITLE],
+  ['导入新增了乃琳那场且标题持久化', Boolean(naiSaved) && naiSaved?.title === NAI_TITLE],
+  ['导入日志记录补充标题', importLogLine.includes('补充标题 1 条')],
+  ['/status plans 映射带 title', statusPlan?.title === NAI_TITLE],
+  ['normalizePlans 保留标题并截断到 80 字', normalizedTitle === 'T'.repeat(80)],
   ['导入日志带北京时间且含新增的乃琳 11-15 03:00', importLogLine.includes('北京时间') && importLogLine.includes('11-15 03:00')],
   ['添加日志带北京时间', addLogLine.includes('北京时间') && addLogLine.includes('11-14 03:00')],
   ['删除日志带北京时间', delLogLine.includes('北京时间') && delLogLine.includes('11-14 03:00')],
@@ -133,6 +148,8 @@ const asserts = [
   ['client fmtPlanTime 用 +8 小时偏移', fmtFn.includes('+ 8 * 3600 * 1000') || fmtFn.includes('+8 * 3600 * 1000')],
   ['client 计划时间带「（北京时间）」后缀', fmtFn.includes('（北京时间）')],
   ['client 有本机时间提示 helper', clientSrc.includes('fmtLocalTime')],
+  ['client 导入时携带 title', clientSrc.includes("title: x.title")],
+  ['client 计划卡片渲染标题', clientSrc.includes('data-bd-plan-title')],
 ]
 let failed = 0
 for (const [name, ok] of asserts) {

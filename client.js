@@ -117,6 +117,7 @@ select[data-bd-input]{cursor:pointer;}
 [data-bd-plan-time]{flex:none;font-size:11.5px;font-variant-numeric:tabular-nums;}
 [data-bd-plan-name]{flex:1;min-width:80px;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 [data-bd-plan-cd]{white-space:nowrap;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#9aa0a6);}
+[data-bd-plan-title]{flex-basis:100%;min-width:0;font-size:10.5px;line-height:1.35;color:var(--dsw-alias-label-tertiary,#9aa0a6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 `
     /* ────────────────────────── 默认值与格式化工具 ──────────────────────────
        DEFAULT_GREETINGS / DEFAULT_UI 与 lib/duty-config.mjs 的 DEFAULTS 保持同步：
@@ -728,9 +729,9 @@ select[data-bd-input]{cursor:pointer;}
         const loading = kind === 'reserve' ? 'import-reserve' : 'import-schedule'
         setDynLoading(loading)
         try {
-          const r = await jpost('/plans', { action: 'import', items: items.map((x) => ({ mid: x.mid, name: x.name, at: x.at })) })
+          const r = await jpost('/plans', { action: 'import', items: items.map((x) => ({ mid: x.mid, name: x.name, title: x.title || '', at: x.at })) })
           if (!r || r.ok === false) throw new Error((r && r.error) || '导入失败')
-          let text = `已导入 ${r.added} 条计划` + (r.skipped ? `，跳过 ${r.skipped} 条` : '')
+          let text = `已导入 ${r.added} 条计划` + (r.updated ? `，补充标题 ${r.updated} 条` : '') + (r.skipped ? `，跳过 ${r.skipped} 条` : '')
           let tone = 'good'
           if (delAfterImport && area.sourceId && r.added > 0) {
             try {
@@ -873,7 +874,8 @@ select[data-bd-input]{cursor:pointer;}
             h('button', {
               'data-bd-btn': '', 'data-mini': '', 'data-danger': '', disabled: busy === 'plan',
               onClick: () => onRemovePlan(p.id),
-            }, '删除'))))
+            }, '删除'),
+            p.title ? h('span', { 'data-bd-plan-title': '', title: p.title }, p.title) : null)))
           : h(Note, null, '还没有手动计划。临时想守某个主播的某场直播，就在这里加一条。'),
         h(Sub, null, '从个人动态识别导入'),
         h(Row, null,

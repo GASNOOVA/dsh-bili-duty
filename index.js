@@ -1219,7 +1219,7 @@ export function apply(ctx) {
         } : null,
         waiting: rt.waiting ? { mid: rt.waiting.plan?.mid, name: rt.waiting.plan?.name, at: rt.waiting.plan?.at } : null,
         visiting: rt.visiting ? { mid: rt.visiting.mid, name: rt.visiting.name, roomId: rt.visiting.realRoomId, why: rt.visiting.why.join('、'), since: rt.visiting.since } : null,
-        plans: (cfg.plans || []).map((p) => ({ id: p.id, mid: p.mid, name: p.name, at: p.at, status: p.status })),
+        plans: (cfg.plans || []).map((p) => ({ id: p.id, mid: p.mid, name: p.name, title: p.title || '', at: p.at, status: p.status })),
         tasks,
         giftBalance: rt.giftBalance,
         llm: { available: llm.available, ...llm.route() },
@@ -1479,23 +1479,33 @@ export function apply(ctx) {
         const items = Array.isArray(body.items) ? body.items : []
         const plans = Array.isArray(cfg.plans) ? cfg.plans : []
         const keyOf = (mid, at) => `${String(mid)}|${Number(at)}`
-        const seen = new Set(plans.map((p) => keyOf(p.mid, Date.parse(p.at))))
+        const byKey = new Map(plans.map((p) => [keyOf(p.mid, Date.parse(p.at)), p]))
+        const seen = new Set(byKey.keys())
         const now = Date.now()
         let added = 0
         let skipped = 0
+        let updated = 0
         const addedNotes = []
         for (const it of items) {
           const mid = String(it?.mid || '').replace(/\D/g, '')
           const at = Date.parse(String(it?.at || ''))
+          const title = String(it?.title || '').trim().slice(0, 80)
           if (!mid || !Number.isFinite(at) || at <= now) { skipped += 1; continue }
           const k = keyOf(mid, at)
-          if (seen.has(k)) { skipped += 1; continue }
+          if (seen.has(k)) {
+            // 已存在同主播同时刻的计划：顺手补齐/刷新预约标题（老计划没有标题时也能补上）
+            const prev = byKey.get(k)
+            if (prev && title && prev.title !== title && !prev.title) { prev.title = title; updated += 1 }
+            skipped += 1
+            continue
+          }
           if (plans.length >= 50) { skipped += 1; continue }
           seen.add(k)
           plans.push({
             id: `plan-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
             mid,
             name: String(it?.name || ''),
+            title,
             at: new Date(at).toISOString(),
             createdAt: nowIso(),
             status: 'pending',
@@ -1505,8 +1515,8 @@ export function apply(ctx) {
         }
         cfg.plans = plans
         saveCfg()
-        log(`从预约导入计划：新增 ${added} 条，跳过 ${skipped} 条${addedNotes.length ? `；新增：${addedNotes.join('、')}（北京时间）` : ''}`)
-        return sendJson(res, 200, { ok: true, added, skipped, plans: cfg.plans })
+        log(`从预约导入计划：新增 ${added} 条，跳过 ${skipped} 条${updated ? `，补充标题 ${updated} 条` : ''}${addedNotes.length ? `；新增：${addedNotes.join('、')}（北京时间）` : ''}`)
+        return sendJson(res, 200, { ok: true, added, skipped, updated, plans: cfg.plans })
       }
       if (body.action === 'add') {
         const at = Date.parse(body.plan?.at)
@@ -1519,6 +1529,7 @@ export function apply(ctx) {
           id: `plan-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           mid: String(body.plan?.mid || ''),
           name: planName,
+          title: String(body.plan?.title || '').trim().slice(0, 80),
           at: new Date(at).toISOString(),
           createdAt: nowIso(),
           status: 'pending',
