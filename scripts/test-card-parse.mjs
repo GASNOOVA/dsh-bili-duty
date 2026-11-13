@@ -5,6 +5,7 @@
 import { parseLiveCard, extractCardReserve, parseCardTime, parseReserveDescTime } from '../lib/duty-card.mjs'
 
 const bj = (s) => Date.parse(s + '+08:00')
+const berlin = (s) => Date.parse(s + '+01:00')
 const cases = []
 const ok = (label, got, want) => {
   const pass = JSON.stringify(got) === JSON.stringify(want)
@@ -59,14 +60,17 @@ ok('转发动态卡片抽取', { mid: ex.mid, name: ex.name, title: ex.title, at
   mid: '672353429', name: '贝拉kira', title: '水商生活', at: new Date(bj('2026-11-17 12:00')).toISOString(), side: 'orig', cardType: 'live_rcmd',
 })
 
-// 7) 新版预约卡：additional.type=ADDITIONAL_TYPE_RESERVE（desc1.text 才是时间）
-const fixedNow = bj('2026-11-10 12:00')
-ok('desc 时间 11-17 11:00', parseReserveDescTime('11-17 11:00 直播', fixedNow), bj('2026-11-17 11:00'))
-ok('desc 时间 11月15日 11:00', parseReserveDescTime('11月15日 11:00', fixedNow), bj('2026-11-15 11:00'))
-ok('desc 时间 11/17 11:00', parseReserveDescTime('11/17 11:00', fixedNow), bj('2026-11-17 11:00'))
-ok('desc 时间 今天/明天', [parseReserveDescTime('今天 20:00', fixedNow), parseReserveDescTime('明天 19:30', fixedNow)], [bj('2026-11-10 20:00'), bj('2026-11-11 19:30')])
-ok('desc 跨年 01-05', parseReserveDescTime('01-05 11:00', fixedNow), bj('2027-01-05 11:00'))
-ok('desc 无时间 NaN', Number.isNaN(parseReserveDescTime('预约中', fixedNow)), true)
+// 7) 新版预约卡：additional.type=ADDITIONAL_TYPE_RESERVE（desc1.text 才是时间；文案按请求的时区渲染）
+//    用户真实场景：浏览器在柏林（getTimezoneOffset=-60），卡片文案「明天 03:00 直播」已经是柏林时间
+const fixedNow = bj('2026-11-10 12:00') // 柏林 11-10 05:00
+ok('desc 本地时区 11-17 11:00', parseReserveDescTime('11-17 11:00 直播', fixedNow, -60), berlin('2026-11-17 11:00'))
+ok('desc 本地时区 11月15日 11:00', parseReserveDescTime('11月15日 11:00', fixedNow, -60), berlin('2026-11-15 11:00'))
+ok('desc 本地时区 11/17 11:00', parseReserveDescTime('11/17 11:00', fixedNow, -60), berlin('2026-11-17 11:00'))
+ok('desc 本地时区 今天/明天', [parseReserveDescTime('今天 20:00', fixedNow, -60), parseReserveDescTime('明天 19:30', fixedNow, -60)], [berlin('2026-11-10 20:00'), berlin('2026-11-11 19:30')])
+ok('desc 本地时区 跨年 01-05', parseReserveDescTime('01-05 11:00', fixedNow, -60), berlin('2027-01-05 11:00'))
+ok('desc 北京时区（-480）仍支持', parseReserveDescTime('11-17 11:00 直播', fixedNow, -480), bj('2026-11-17 11:00'))
+ok('真实场景：柏林明天 03:00 = 14日02:00Z', parseReserveDescTime('明天 03:00 直播', Date.parse('2026-11-13T12:00:00Z'), -60), Date.parse('2026-11-14T02:00:00.000Z'))
+ok('desc 无时间 NaN', Number.isNaN(parseReserveDescTime('预约中', fixedNow, -60)), true)
 
 const dyn2 = {
   id_str: '2', type: 'DYNAMIC_TYPE_FORWARD',
@@ -83,9 +87,11 @@ const dyn2 = {
   },
 }
 const ex2 = extractCardReserve(dyn2)
-ok('新版预约卡抽取', { mid: ex2.mid, name: ex2.name, title: ex2.title, at: ex2.at, side: ex2.side, cardType: ex2.cardType }, {
-  mid: '672328094', name: '嘉然今天吃什么', title: '直播预约：【突击】鸣潮3.8！', at: new Date(bj('2026-11-17 11:00')).toISOString(), side: 'orig', cardType: 'additional_reserve',
+ok('新版预约卡抽取（默认柏林时区）', { mid: ex2.mid, name: ex2.name, title: ex2.title, at: ex2.at, side: ex2.side, cardType: ex2.cardType }, {
+  mid: '672328094', name: '嘉然今天吃什么', title: '直播预约：【突击】鸣潮3.8！', at: new Date(berlin('2026-11-17 11:00')).toISOString(), side: 'orig', cardType: 'additional_reserve',
 })
+const ex2bj = extractCardReserve(dyn2, fixedNow, -480)
+ok('新版预约卡抽取（显式北京时区）', ex2bj.at, new Date(bj('2026-11-17 11:00')).toISOString())
 
 const dyn3 = {
   id_str: '3', type: 'DYNAMIC_TYPE_FORWARD',
@@ -98,7 +104,7 @@ const dyn3 = {
   },
 }
 const ex3 = extractCardReserve(dyn3)
-ok('新版预约卡（无 desc2/status）', { mid: ex3.mid, at: ex3.at, cardType: ex3.cardType }, { mid: '672342685', at: new Date(bj('2026-11-15 11:00')).toISOString(), cardType: 'additional_reserve' })
+ok('新版预约卡（无 desc2/status，默认柏林时区）', { mid: ex3.mid, at: ex3.at, cardType: ex3.cardType }, { mid: '672342685', at: new Date(berlin('2026-11-15 11:00')).toISOString(), cardType: 'additional_reserve' })
 
 const failed = cases.filter((c) => !c.pass)
 console.log(`\n${cases.length - failed.length}/${cases.length} passed`)

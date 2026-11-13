@@ -161,7 +161,7 @@ function additionalDebug(item) {
 }
 
 /** 把 B站 动态 item 归一成 {id,type,publishedAt,text,images,author,forward}；转发动态会合并 orig 原文 */
-function mapDynamicItem(it) {
+function mapDynamicItem(it, tzOffsetMin = -60) {
   const o = it && typeof it === 'object' ? it : {}
   const readSide = (side) => {
     const md = side?.modules?.module_dynamic || {}
@@ -197,7 +197,7 @@ function mapDynamicItem(it) {
     if (orig.card) parts.push(`${head}【预约/直播卡片】${orig.card}`)
   }
   const images = [...(own.images || []), ...((orig && orig.images) || [])]
-  const reserve = extractCardReserve(o)
+  const reserve = extractCardReserve(o, Date.now(), tzOffsetMin)
   return {
     id: String(o.id_str || o.id || ''),
     type: String(o.type || ''),
@@ -1324,7 +1324,9 @@ export function apply(ctx) {
 
     if (req.method === 'POST' && path.endsWith('/card-parse')) {
       const body = await readBody(req)
-      const fromItem = body.item ? extractCardReserve(body.item) : null
+      const tzOff = Number(body.tzOffset)
+      const tzOffset = Number.isFinite(tzOff) && tzOff >= -840 && tzOff <= 720 ? Math.round(tzOff) : -60
+      const fromItem = body.item ? extractCardReserve(body.item, Date.now(), tzOffset) : null
       const parsed = fromItem || (body.card ? parseLiveCard(body.card) : null)
       return sendJson(res, 200, { ok: Boolean(parsed), parsed, item: Boolean(body.item) })
     }
@@ -1375,10 +1377,13 @@ export function apply(ctx) {
       if (!cred) return sendJson(res, 200, { ok: false, error: '没有登录凭证（请先扫码登录）' })
       const me = String(cred.dedeuserid || '')
       if (!me) return sendJson(res, 200, { ok: false, error: '凭证里没有自己的 UID' })
-      const r = await getSpaceDynamics(cred, me)
+      // B站 动态卡片文案（「明天 03:00 直播」）会按 timezone_offset 渲染成本地时间；客户端传浏览器偏移
+      const tzOff = Number(url.searchParams.get('tzOffset'))
+      const tzOffset = Number.isFinite(tzOff) && tzOff >= -840 && tzOff <= 720 ? Math.round(tzOff) : -60
+      const r = await getSpaceDynamics(cred, me, { timezoneOffset: tzOffset })
       if (!r.ok) return sendJson(res, 200, { ok: false, error: describeError(r.code, r.message), code: r.code })
       const rawItems = Array.isArray(r.data?.items) ? r.data.items : []
-      const items = rawItems.map(mapDynamicItem)
+      const items = rawItems.map((it) => mapDynamicItem(it, tzOffset))
       rt.dynamicsCache = items
       return sendJson(res, 200, {
         ok: true,

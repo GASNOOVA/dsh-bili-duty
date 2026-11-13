@@ -561,3 +561,15 @@
   - 后端日志保留北京时间字符串（服务器无法得知浏览器时区，且便于和 B站 官方时间对照）。
 - 效果：柏林浏览器把贝拉 14 日 03:00（北京）的预约显示为「11月13日 20:00（本地时间）」，悬停可看「北京时间 11月14日 03:00」——同一绝对时刻，不再需要用户自己心算时差。
 - 测试：`scripts/test-plan-time.mjs` 更新显示相关断言（fmtPlanTime 使用本地 getHours 且不强制 +8、带「（本地时间）」后缀、存在 fmtBeijingTime 对照、计划/识别结果 tooltip 用北京时间），全套 20 项断言通过；其余 7 个测试脚本不受影响。
+
+## 25. v1.11.10 预约卡时间按浏览器本地时区解析（2026-11-13）
+
+- 现象：用户报告预约卡「明天 03:00 直播」导入后是 2026-11-13T19:00:00.000Z（柏林 13 日 20:00），比预期早 1 小时、且日期差一天。
+- 根因：`getSpaceDynamics` 请求固定带 `timezone_offset: '-60'`，B站 动态接口会按该偏移把预约卡 `desc1.text` 渲染成对应时区的墙上时间（「明天 03:00」= 柏林 14 日 03:00）；而 `parseReserveDescTime` 一直按北京时间（UTC+8）解释，导致绝对时刻多 7 小时。正确值为 **2026-11-14T02:00:00.000Z**（柏林 14 日 03:00 = 北京 14 日 10:00）。
+- 修复：
+  - `lib/duty-card.mjs`：`parseReserveDescTime(text, nowMs, tzOffsetMin = -60)` / `parseReserveAdditional` / `extractCardReserve` 增加时区参数，用 JS `getTimezoneOffset()` 约定（UTC - 本地；柏林 -60、北京 -480）解释墙上时间并换算绝对时刻；「今天/明天/后天」按该时区的墙上日期计算；无年份时用该时区当前年，跨年 +1；删除旧的北京时间专用 `bjNowParts`。
+  - `lib/duty-actions.mjs`：`getSpaceDynamics(cred, hostMid, { offset, timezoneOffset = -60 })`，`timezone_offset` 改为可传参。
+  - `index.js`：`mapDynamicItem(it, tzOffsetMin)`；GET `/dynamics` 接受 `tzOffset`（-840..720，默认 -60）并透传；`/card-parse` 接受 `body.tzOffset`。
+  - `client.js`：`browserTzOffset()` 取浏览器偏移，读取动态时带 `?tzOffset=`；① 区域说明改为「卡片文案已按浏览器本地时区渲染，解析时按同一时区换算，导入即本地时间」。
+  - `scripts/test-card-parse.mjs`：新增本地时区断言（柏林 -60 为主、保留北京 -480 用例）与真实场景断言（now=2026-11-13T12:00Z、『明天 03:00 直播』、-60 → 2026-11-14T02:00:00.000Z），20/20 通过。
+- 效果：柏林浏览器读取贝拉「明天 03:00 直播」卡，导入的计划是 2026-11-14T02:00:00.000Z，界面按本地时区显示「11月14日 03:00（本地时间）」，悬停「北京时间 11月14日 10:00」。

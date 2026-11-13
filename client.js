@@ -139,6 +139,9 @@ select[data-bd-input]{cursor:pointer;}
 
     const pad2 = (n) => String(n).padStart(2, '0')
     const browserTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local' } catch { return 'local' } }
+    /* B站 动态接口的 timezone_offset 参数 = JS getTimezoneOffset()（东八区 -480、柏林冬令时 -60）；
+       卡片文案里的「明天 03:00」会按这个偏移渲染，解析时也要用同一个偏移。 */
+    const browserTzOffset = () => { try { return new Date().getTimezoneOffset() } catch { return -60 } }
     const clampInt = (v, min, max, dflt) => {
       const n = Number(v)
       return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : dflt
@@ -671,7 +674,7 @@ select[data-bd-input]{cursor:pointer;}
       const loadDynamics = async () => {
         setDynLoading('list'); setDynMsg(null)
         try {
-          const d = await jget('/dynamics')
+          const d = await jget('/dynamics?tzOffset=' + browserTzOffset())
           if (!d || d.ok === false) throw new Error((d && d.error) || '读取失败')
           const items = Array.isArray(d.items) ? d.items : []
           setDyns(items)
@@ -888,7 +891,7 @@ select[data-bd-input]{cursor:pointer;}
           h(Note, null, '先读取空间里的动态；下面按「预约（文字/卡片）」和「日程表（图片）」分成两个区域，各自识别、各自导入。')),
         dynMsg ? h('div', { 'data-bd-msg': '', 'data-tone': dynMsg.tone }, dynMsg.text) : null,
         h(Sub, null, '① 预约识别（卡片）'),
-        h(Note, null, '只识别动态里的直播预约卡片：结构化 JSON 直接解析，不用模型、毫秒级。支持旧版 live_rcmd 卡和新版「直播预约」卡（additional.reserve，时间在文案里）。没有预约卡片的文字动态不会出现在这里。'),
+        h(Note, null, '只识别动态里的直播预约卡片：结构化 JSON 直接解析，不用模型、毫秒级。支持旧版 live_rcmd 卡和新版「直播预约」卡（additional.reserve，时间在文案里）；卡片文案里的「明天 03:00」已按浏览器本地时区渲染，解析时按同一时区换算，导入的计划直接就是本地时间。没有预约卡片的文字动态不会出现在这里。'),
         dyns ? h('div', { 'data-bd-list': '' }, areaList('reserve')) : null,
         ...areaResult('reserve'),
         h(Sub, null, '② 日程表识别（图片）'),
