@@ -157,23 +157,25 @@ select[data-bd-input]{cursor:pointer;}
       if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB'
       return (v / 1024 / 1024).toFixed(1) + ' MB'
     }
-    /* 计划的绝对时间统一按北京时间展示（B站 官方时间都是北京时间）。
-       以前用浏览器本地时区格式化，海外浏览器上会把 14 日 03:00（北京）显示成 13 日 20:00（柏林），
-       看起来像导入了错误时间。可传 opts.tz=false 只显示时间不带时区后缀。 */
+    /* 界面时间统一按浏览器本地时区展示（用户在柏林就显示柏林时间）。
+       B站 预约卡片文案里的「明天 03:00」是北京时间，解析时已换算成绝对时刻，
+       这里再按本地时区展示；北京时间只作为悬停提示。opts.tz=false 可去掉「（本地时间）」后缀。 */
     const fmtPlanTime = (iso, opts) => {
       const ts = Date.parse(iso)
       if (!Number.isFinite(ts)) return String(iso || '—')
-      const d = new Date(ts + 8 * 3600 * 1000)
-      const text = `${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`
-      return opts && opts.tz === false ? text : text + '（北京时间）'
+      const d = new Date(ts)
+      const text = `${d.getMonth() + 1}月${d.getDate()}日 ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+      return opts && opts.tz === false ? text : text + '（本地时间）'
     }
-    /* 浏览器本地时间，只用于计划时间的 title 悬浮提示「本机时间 …」 */
-    const fmtLocalTime = (iso) => {
+    /* 北京时间（B站 官方时间），只用于悬停提示/日志对照 */
+    const fmtBeijingTime = (iso) => {
       const ts = Date.parse(iso)
       if (!Number.isFinite(ts)) return String(iso || '—')
-      const d = new Date(ts)
-      return `${d.getMonth() + 1}月${d.getDate()}日 ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+      const d = new Date(ts + 8 * 3600 * 1000)
+      return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日 ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`
     }
+    /* 本机时间别名（兼容旧调用） */
+    const fmtLocalTime = (iso) => fmtPlanTime(iso, { tz: false })
     const toLocalInput = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}` }
     const parseGreetings = (text) => String(text || '').split(/\r?\n/)
       .map((line) => line.trim().slice(0, 20))
@@ -763,7 +765,7 @@ select[data-bd-input]{cursor:pointer;}
         return pool.map((d) => h('div', { 'data-bd-plan': '', key: kind + '-' + d.id },
           h('span', {
             'data-bd-plan-time': '',
-            title: d.publishedAt ? `发布时间：北京时间 ${fmtPlanTime(new Date(d.publishedAt).toISOString(), { tz: false })}（本机 ${fmtLocalTime(new Date(d.publishedAt).toISOString())}）` : '',
+            title: d.publishedAt ? `发布时间：本地 ${fmtPlanTime(new Date(d.publishedAt).toISOString(), { tz: false })}（北京时间 ${fmtBeijingTime(new Date(d.publishedAt).toISOString())}）` : '',
           }, d.publishedAt ? fmtPlanTime(new Date(d.publishedAt).toISOString(), { tz: false }) : '时间未知'),
           h('span', { 'data-bd-plan-name': '', title: d.reserve?.title || d.text || '' },
             ((d.reserve && d.reserve.title ? `【${d.reserve.title}】` : '') + (d.text || '（无文字）')).slice(0, 56) + ((d.images || []).length ? `　[图×${d.images.length}]` : '')),
@@ -794,7 +796,7 @@ select[data-bd-input]{cursor:pointer;}
               }),
               h('span', {
                 'data-bd-plan-time': '',
-                title: r.at ? `本机时间 ${fmtLocalTime(r.at)}` : '',
+                title: r.at ? `北京时间 ${fmtBeijingTime(r.at)}` : '',
               }, r.at ? fmtPlanTime(r.at) : '时间未知'),
               h('span', { 'data-bd-plan-name': '', title: r.title || '' }, r.name || '未知主播'),
               r.title ? h('span', { 'data-bd-plan-cd': '', title: r.title }, '· ' + r.title.slice(0, 20)) : null,
@@ -841,7 +843,7 @@ select[data-bd-input]{cursor:pointer;}
               : '按北京时间解释上面的工作时间；手动计划用绝对时间，不受影响',
           })),
         h(Sub, null, '手动计划（一次性）'),
-        h(Note, null, '填主播和计划开播时间：输入框按本机时区（' + browserTz() + '）填写，计划列表统一按北京时间显示。插件会提前 10 分钟进房；到点仍未开播最多再等 10 分钟；触发一次后结束。自动模式关掉也照常执行。'),
+        h(Note, null, '填主播和计划开播时间：输入框按本机时区（' + browserTz() + '）填写，计划列表/识别结果也统一按本机时区显示；B站 预约卡片里的北京时间会自动换算成本地时间。插件会提前 10 分钟进房；到点仍未开播最多再等 10 分钟；触发一次后结束。自动模式关掉也照常执行。'),
         h(Row, null,
           h('div', { 'data-bd-grow': '' },
             h('select', {
@@ -866,7 +868,7 @@ select[data-bd-input]{cursor:pointer;}
           ? h('div', { 'data-bd-list': '' }, plans.map((p) => h('div', { 'data-bd-plan': '', key: p.id || String(p.at) },
             h('span', {
               'data-bd-plan-time': '',
-              title: `本机时间 ${fmtLocalTime(p.at)}`,
+              title: `北京时间 ${fmtBeijingTime(p.at)}`,
             }, fmtPlanTime(p.at)),
             h('span', { 'data-bd-plan-name': '', title: p.name || p.mid }, p.name || String(p.mid)),
             h(Tag, { tone: PLAN_TONE[p.status] || 'idle' }, PLAN_LABEL[p.status] || p.status || '未知'),
@@ -1250,7 +1252,7 @@ select[data-bd-input]{cursor:pointer;}
           })
           if (!r.ok) throw new Error(r.error || '添加失败')
           const iso = new Date(ts).toISOString()
-          setMsg({ tone: 'good', text: '已添加计划：北京时间 ' + fmtPlanTime(iso, { tz: false }) + '（本机 ' + fmtLocalTime(iso) + '；提前 10 分钟进房）' })
+          setMsg({ tone: 'good', text: '已添加计划：' + fmtPlanTime(iso) + '（北京时间 ' + fmtBeijingTime(iso) + '；提前 10 分钟进房）' })
           refresh()
           return true
         } catch (e) { setMsg({ tone: 'warn', text: '添加计划失败：' + errText(e) }); return false } finally { setBusy('') }

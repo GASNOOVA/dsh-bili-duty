@@ -8,7 +8,7 @@
  *  3) 导入到已存在但无标题的旧计划时，可以补上标题（updated）；
  *  4) /status 的 plans 映射带 title，normalizePlans 保留并截断标题；
  *  5) 计划增删日志带「北京时间」与北京时间字符串；
- *  6) client.js 不再用浏览器本地时区格式化计划时间（回归到 13日20:00 的 bug），并渲染标题。
+ *  6) client.js 计划时间按浏览器本地时区显示（东京/柏林用户看到本地时间），北京时间仅作悬浮提示；并渲染标题。
  */
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -128,7 +128,7 @@ const delLogLine = logAfterRemove.split('\n').find((x) => x.includes('删除手�
 
 // 4) client.js 必须按北京时间（+8）格式化，不能再直接用浏览器本地时区
 const clientSrc = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
-const fmtFn = clientSrc.slice(clientSrc.indexOf('const fmtPlanTime'), clientSrc.indexOf('const toLocalInput'))
+const fmtFn = clientSrc.slice(clientSrc.indexOf('const fmtPlanTime'), clientSrc.indexOf('const fmtBeijingTime'))
 const asserts = [
   ['add 返回 ok', r.ok === true],
   ['手动添加的计划持久化到 config', Boolean(savedBella)],
@@ -145,9 +145,11 @@ const asserts = [
   ['添加日志带北京时间', addLogLine.includes('北京时间') && addLogLine.includes('11-14 03:00')],
   ['删除日志带北京时间', delLogLine.includes('北京时间') && delLogLine.includes('11-14 03:00')],
   ['删除后配置里不再有该计划', !savedAfterRemove.some((p) => p.at === BJ_AT)],
-  ['client fmtPlanTime 用 +8 小时偏移', fmtFn.includes('+ 8 * 3600 * 1000') || fmtFn.includes('+8 * 3600 * 1000')],
-  ['client 计划时间带「（北京时间）」后缀', fmtFn.includes('（北京时间）')],
-  ['client 有本机时间提示 helper', clientSrc.includes('fmtLocalTime')],
+  ['client fmtPlanTime 使用浏览器本地时区（不再强制 +8）', fmtFn.includes('d.getHours()') && !fmtFn.includes('+ 8 * 3600 * 1000') && !fmtFn.includes('getUTCHours')],
+  ['client 计划时间带「（本地时间）」后缀', fmtFn.includes('（本地时间）')],
+  ['client 有北京时间对照 helper（fmtBeijingTime）', clientSrc.includes('fmtBeijingTime')],
+  ['client 计划卡片 tooltip 用北京时间对照', clientSrc.includes('fmtBeijingTime(p.at)')],
+  ['client 识别结果 tooltip 用北京时间对照', clientSrc.includes('fmtBeijingTime(r.at)')],
   ['client 导入时携带 title', clientSrc.includes("title: x.title")],
   ['client 计划卡片渲染标题', clientSrc.includes('data-bd-plan-title')],
 ]
