@@ -105,6 +105,15 @@ function beijingClock(ms = Date.now()) {
   return `${hh}:${mm}`
 }
 
+/** 把绝对时间格式化成北京时间「MM-DD HH:mm」，用于计划相关日志（避免宿主机/浏览器时区混淆） */
+function beijingDateTime(input) {
+  const ts = typeof input === 'number' ? input : Date.parse(String(input ?? ''))
+  if (!Number.isFinite(ts)) return String(input ?? '')
+  const d = new Date(ts + 8 * 3600 * 1000)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`
+}
+
 /**
  * 某时区当前是当天的第几分钟。
  *   beijing      固定 UTC+8（默认，不受宿主机时区影响）
@@ -1474,6 +1483,7 @@ export function apply(ctx) {
         const now = Date.now()
         let added = 0
         let skipped = 0
+        const addedNotes = []
         for (const it of items) {
           const mid = String(it?.mid || '').replace(/\D/g, '')
           const at = Date.parse(String(it?.at || ''))
@@ -1491,10 +1501,11 @@ export function apply(ctx) {
             status: 'pending',
           })
           added += 1
+          addedNotes.push(`${String(it?.name || mid)} ${beijingDateTime(at)}`)
         }
         cfg.plans = plans
         saveCfg()
-        log(`从预约导入计划：新增 ${added} 条，跳过 ${skipped} 条`)
+        log(`从预约导入计划：新增 ${added} 条，跳过 ${skipped} 条${addedNotes.length ? `；新增：${addedNotes.join('、')}（北京时间）` : ''}`)
         return sendJson(res, 200, { ok: true, added, skipped, plans: cfg.plans })
       }
       if (body.action === 'add') {
@@ -1503,25 +1514,31 @@ export function apply(ctx) {
         if (at < Date.now() - 60_000) return sendJson(res, 200, { ok: false, error: '这个时间已经过去了' })
         if ((cfg.plans || []).length >= 50) return sendJson(res, 200, { ok: false, error: '计划太多了' })
         const s = streamerByMid(body.plan?.mid)
+        const planName = String(body.plan?.name || s?.name || '')
         cfg.plans.push({
           id: `plan-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
           mid: String(body.plan?.mid || ''),
-          name: String(body.plan?.name || s?.name || ''),
+          name: planName,
           at: new Date(at).toISOString(),
           createdAt: nowIso(),
           status: 'pending',
         })
         saveCfg()
+        log(`手动计划已添加：${planName || body.plan?.mid} · ${beijingDateTime(at)}（北京时间）`)
         return sendJson(res, 200, { ok: true, plans: cfg.plans })
       }
       if (body.action === 'remove') {
+        const removing = (cfg.plans || []).find((p) => p.id === body.id)
         cfg.plans = (cfg.plans || []).filter((p) => p.id !== body.id)
         saveCfg()
+        log(`删除手动计划：${removing ? `${removing.name || removing.mid} · ${beijingDateTime(removing.at)}` : String(body.id)}${removing ? '（北京时间）' : ''}`)
         return sendJson(res, 200, { ok: true, plans: cfg.plans })
       }
       if (body.action === 'clear') {
+        const count = (cfg.plans || []).length
         cfg.plans = []
         saveCfg()
+        log(`清空手动计划 ${count} 条`)
         return sendJson(res, 200, { ok: true, plans: [] })
       }
       return sendJson(res, 200, { ok: false, error: 'unknown action' })
