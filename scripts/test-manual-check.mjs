@@ -51,7 +51,14 @@ global.fetch = async (url) => {
     return json({ code: 0, data: { roomid: 0, liveStatus: 0, title: '', uname: '', online: 0 } })
   }
   if (u.includes('/room/v1/Room/get_info')) {
+    // 旧接口已在 v1.11.12 弃用；保留 mock 只为断言代码不再走这里时会暴露问题（见 test-room-info.mjs）
     return json({ code: 0, data: { room_id: 22625027, uid: '672342685', live_status: 1, title: '测试直播', uname: '乃琳Queen', online: 1 } })
+  }
+  if (u.includes('/xlive/web-room/v1/index/getInfoByRoom')) {
+    return json({ code: 0, data: {
+      room_info: { room_id: 22625027, uid: 672342685, live_status: 1, title: '测试直播', online: 1 },
+      anchor_info: { base_info: { uname: '乃琳Queen' } },
+    } })
   }
   if (u.includes('roomEntryAction')) return json({ code: 0 })
   if (u.includes('getDanmuInfo')) return json({ code: -1, message: 'mock：测试不连弹幕' })

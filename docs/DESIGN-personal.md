@@ -584,3 +584,11 @@
   - `client.js`：任务设置「点赞」下新增「每日总上限（全局）」输入框（默认 600），`formToPatch` 提交 `likeDailyMax`；点赞开关的说明显示实时「今日已 X 次 / 上限 Y 次」。
 - 行为：默认每轮 300 次、每 10 分钟一轮，但全天所有房间合计最多 600 次；达到后当天不再点赞（第二天北京时间 0 点随 state 重置）。手动「点赞（一轮）」同样受上限约束。
 - 测试：新增 `scripts/test-like-cap.mjs` 19 项断言（默认值与夹取、预算裁剪、超限停止、跨房间状态合计、源码接线），全部通过。
+
+## 27. v1.11.12 查房间接口迁移（旧 get_info 被 412）
+
+- 现象：2026-11-14 起 live.log 每 60 秒出现「主看房状态检查失败：查房间 <roomId> 失败：非 JSON 响应：<!DOCTYPE html>…」；贝拉（22632424）05:08–05:19 连续失败，心宜（30849777）05:51 起连续失败；同房间的观看上报（live-trace）、弹幕 WS 均正常，说明只有查房间接口被挡。
+- 根因：旧接口 `https://api.live.bilibili.com/room/v1/Room/get_info?room_id=` 被 B站 风控返回 **HTTP 412 HTML**（无论是否带 Cookie）；而 `room/v1/Room/getRoomInfoOld` 与 `xlive/web-room/v1/index/getInfoByRoom` 仍返回 200 JSON。
+- 修复：`lib/live.mjs` 的 `getRoomInfo` 改用 `xlive/web-room/v1/index/getInfoByRoom`（与观看上报同源），带 WBI 签名 `{room_id, web_location:'444.8'}`；解析 `data.room_info`（room_id/uid/live_status/title/online）与 `data.anchor_info.base_info.uname`；`getJson` 的非 JSON 错误补上 HTTP 状态码（便于诊断风控页）。
+- 影响面：主播/计划房间解析、主看房存活检查、手动解析共 4 处调用统一受益；旧接口不再被请求。
+- 测试：新增 `scripts/test-room-info.mjs`（12 项断言：字段解析、WBI 签名参数、不再请求旧接口、HTML 412 错误可诊断、code!=0 抛错）；`test-manual-check` 的假 fetch 增加 getInfoByRoom 桩；全测试通过。

@@ -128,6 +128,7 @@ scripts/probe.mjs     技术探针（登录/房间/点赞/礼物/拉流，排障
 scripts/test-trace.mjs 观看上报单元测试（假 fetch，不碰网络）
 scripts/test-attach-clean.mjs 附件清退单测（28 项，临时目录 + 假会话）
 scripts/test-like-cap.mjs 点赞每日总上限单测
+scripts/test-room-info.mjs 查房间接口（getInfoByRoom，旧 get_info 已 412）单测
 docs/                 设计文档与原插件解读笔记
 ```
 
@@ -147,6 +148,7 @@ node scripts/test-client-register.mjs  # client 注册槽位冒烟
 node scripts/test-manual-check.mjs  # 手动检查不受值守时段限制
 node scripts/test-plan-time.mjs  # 计划时间/标题（含导入去重、标题补全、日志）
 node scripts/test-like-cap.mjs  # 点赞每日总上限（预算裁剪/状态合计/界面接线）
+node scripts/test-room-info.mjs  # 查房间改走 getInfoByRoom + WBI（旧接口 412 回归）
 ```
 
 ## License
