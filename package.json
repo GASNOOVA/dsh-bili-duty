@@ -1,6 +1,6 @@
 {
   "name": "dsh-bili-duty",
-  "version": "1.11.10-personal.0",
+  "version": "1.11.11-personal.0",
   "description": "直播值守（个人定制版）：对固定主播自动值守并完成 B站 粉丝团每日任务（观看/弹幕/点赞/灯牌），基于 dsh-bili-live 改造",
   "keywords": [
     "dsh",

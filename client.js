@@ -127,7 +127,7 @@ select[data-bd-input]{cursor:pointer;}
       autoCheckMin: '15', workHours: '08:00-24:00', workHoursTz: 'beijing', greetingCount: '10', greetingSpacingSec: '30',
       aiIntervalSec: '300', aiDailyMax: '100', danmakuDailyMax: '150', danmakuCooldownSec: '3',
       aiMode: 'follow', aiFollowWindowSec: '60', aiFollowMinCount: '3',
-      maxLen: '20', likeClicks: '300', likeRoundMin: '10', giftDailyMax: '5', watchQn: '150',
+      maxLen: '20', likeClicks: '300', likeRoundMin: '10', likeDailyMax: '600', giftDailyMax: '5', watchQn: '150',
     }
     const WH_RE = /^(?:[01]?\d|2[0-3]):[0-5]\d\s*-\s*(?:(?:[01]?\d|2[0-3]):[0-5]\d|24:00)$/
     const optionPairs = (pairs) => pairs.map(([value, label]) => ({ value, label }))
@@ -222,6 +222,7 @@ select[data-bd-input]{cursor:pointer;}
         maxLen: String(c.maxLen ?? DEFAULT_UI.maxLen),
         likeClicks: String(c.likeClicksPerRound ?? DEFAULT_UI.likeClicks),
         likeRoundMin: String(Math.round((Number(c.likeRoundMs) || 600000) / 60000)),
+        likeDailyMax: String(c.likeDailyMax ?? DEFAULT_UI.likeDailyMax),
         giftDailyMax: String(c.giftMaxPerDay ?? DEFAULT_UI.giftDailyMax),
         watchQn: String(c.watchQn ?? DEFAULT_UI.watchQn),
         streamers: sortRows(c.streamers),
@@ -252,6 +253,7 @@ select[data-bd-input]{cursor:pointer;}
       maxLen: clampInt(f.maxLen, 5, 40, 20),
       likeClicksPerRound: clampInt(f.likeClicks, 1, 3000, 300),
       likeRoundMs: clampInt(Number(f.likeRoundMin) * 60000, 60000, 3600000, 600000),
+      likeDailyMax: clampInt(f.likeDailyMax, 1, 10000, 600),
       giftMaxPerDay: clampInt(f.giftDailyMax, 1, 10, 5),
       watchQn: clampInt(f.watchQn, 80, 400, 150),
       streamers: sortRows(f.streamers).map((s, i) => ({ ...s, order: i })),
@@ -915,7 +917,7 @@ select[data-bd-input]{cursor:pointer;}
           on: form.taskDanmaku !== false, onChange: (v) => saveToggle('taskDanmaku', v, v ? '已开启弹幕任务' : '已关闭弹幕任务'), disabled: saving,
         }),
         h(ToggleRow, {
-          label: '点赞直播间', note: '每次进房至少完成一轮；默认每轮 300 次、每 10 分钟一轮；失败即停，不硬重试。',
+          label: '点赞直播间', note: `每次进房至少完成一轮；全天所有房间合计上限 ${st.like?.max ?? 600} 次（今日已 ${st.like?.today ?? 0} 次），达到后当天不再点赞；失败即停，不硬重试。`,
           on: form.taskLike !== false, onChange: (v) => saveToggle('taskLike', v, v ? '已开启点赞任务' : '已关闭点赞任务'), disabled: saving,
         }),
         h(ToggleRow, {
@@ -994,6 +996,10 @@ select[data-bd-input]{cursor:pointer;}
           h(NumField, {
             label: '轮间隔', unit: '分钟', min: 1, max: 60, value: form.likeRoundMin,
             onChange: (v) => setForm((f) => ({ ...f, likeRoundMin: v })), note: '范围 1–60 分钟，默认 10 分钟',
+          }),
+          h(NumField, {
+            label: '每日总上限（全局）', unit: '次', min: 1, max: 10000, value: form.likeDailyMax,
+            onChange: (v) => setForm((f) => ({ ...f, likeDailyMax: v })), note: '所有房间当天合计，默认 600 次；达到后当天不再点赞',
           })),
         h(Sub, null, '打赏'),
         h(Row, null,

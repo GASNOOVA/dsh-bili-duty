@@ -573,3 +573,14 @@
   - `client.js`：`browserTzOffset()` 取浏览器偏移，读取动态时带 `?tzOffset=`；① 区域说明改为「卡片文案已按浏览器本地时区渲染，解析时按同一时区换算，导入即本地时间」。
   - `scripts/test-card-parse.mjs`：新增本地时区断言（柏林 -60 为主、保留北京 -480 用例）与真实场景断言（now=2026-11-13T12:00Z、『明天 03:00 直播』、-60 → 2026-11-14T02:00:00.000Z），20/20 通过。
 - 效果：柏林浏览器读取贝拉「明天 03:00 直播」卡，导入的计划是 2026-11-14T02:00:00.000Z，界面按本地时区显示「11月14日 03:00（本地时间）」，悬停「北京时间 11月14日 10:00」。
+
+## 26. v1.11.11 点赞每日总数上限（防风控）
+
+- 动因：用户反馈长时间挂机时点赞数会持续累加（当天贝拉 730 次、乃琳 100 次），担心触发风控；原有 `likeClicksPerRound`（每轮次数）与 `likeRoundMs`（轮间隔）没有日总量约束。
+- 实现：
+  - 新增配置 `likeDailyMax`（默认 600，范围 1–10000）：按北京时间自然日、跨房间合计的每日点赞总上限。
+  - 新模块 `lib/duty-like.mjs` 的 `likeBudget({ spent, dailyMax, roundClicks })` 计算 `{ used, max, remain, clicks, exhausted }`，每轮实际点击 = min(本轮计划, 剩余额度, 房间策略批次约束)。
+  - `index.js`：`likeSpentToday()` 汇总 `store.roomsToday()` 的 `likeClicks`；`runLikeRound` 开轮前检查预算，到限直接跳过并记日志「今日点赞总数已达上限（X/Y）」；完成日志改为「本轮 N 次（今日 X/Y）」；心跳里的周期点赞条件增加 `likeSpentToday() < cfg.likeDailyMax`；`/status` 返回 `like:{today,max}`；`store.ensureRoom` 保证点赞计数一定落到状态里。
+  - `client.js`：任务设置「点赞」下新增「每日总上限（全局）」输入框（默认 600），`formToPatch` 提交 `likeDailyMax`；点赞开关的说明显示实时「今日已 X 次 / 上限 Y 次」。
+- 行为：默认每轮 300 次、每 10 分钟一轮，但全天所有房间合计最多 600 次；达到后当天不再点赞（第二天北京时间 0 点随 state 重置）。手动「点赞（一轮）」同样受上限约束。
+- 测试：新增 `scripts/test-like-cap.mjs` 19 项断言（默认值与夹取、预算裁剪、超限停止、跨房间状态合计、源码接线），全部通过。

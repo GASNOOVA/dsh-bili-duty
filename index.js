@@ -6,8 +6,9 @@
  *   2. 手动模式：你在设置页加一条「计划」（主播 + 开播时间），提前 10 分钟进房等待，
  *      到点仍未开播最多等 10 分钟；计划不受工作时间限制；
  *   3. 每日任务：观看直播（live-trace 心跳上报）、发送弹幕（进房问候 + AI 智能弹幕）、点赞
- *      （每 10 分钟一轮 300 次，按房间下发的批次/间隔上限切批）、打赏（每房每天
- *      1 个「粉丝团灯牌」，1 电池，余额不足跳过，不自动充值）；
+ *      （每轮默认 100 次、按房间下发的批次/间隔上限切批，且全天所有房间合计不超过
+ *      likeDailyMax 次，达到后当天不再点赞）、打赏（每房每天 1 个「粉丝团灯牌」，
+ *      1 电池，余额不足跳过，不自动充值）；
  *   4. 其它在播主播有未完成任务时，异步去补任务（不打断主看房的观看上报与弹幕）。
  *
  * 家目录：`$DSH_HOME/bili-duty/`
@@ -46,6 +47,7 @@ import { DanmakuClient, getRoomByUid, getRoomInfo, sendDanmaku } from './lib/liv
 import { generateQr, pollQr, qrSvg, whoAmI } from './lib/auth.mjs'
 import { makeLlm } from './lib/llm.mjs'
 import { prunePlans, rotateLogIfNeeded } from './lib/duty-clean.mjs'
+import { likeBudget } from './lib/duty-like.mjs'
 import { ATTACH_KEEP_DAYS, readTrack, sweepPluginAttachments, trackPath, trackSavedAttachment } from './lib/duty-attach.mjs'
 
 export const name = 'bili-duty'
@@ -565,11 +567,22 @@ export function apply(ctx) {
     else if (!r.message.includes('冷却')) g.queue.shift() // 失败就丢掉这条，避免卡住
   }
 
-  /* ── 点赞：每 10 分钟一轮 300 次，按房间策略切批 ── */
+  /* ── 点赞：每轮按房间策略切批，全天所有房间合计不超过 likeDailyMax ── */
+  /** 北京时间自然日已点赞次数（所有房间合计） */
+  function likeSpentToday() {
+    return store.roomsToday().reduce((sum, r) => sum + (Number(r.likeClicks) || 0), 0)
+  }
+
   async function runLikeRound(meta, { clicks = cfg.likeClicksPerRound, reason = '' } = {}) {
     if (!cfg.taskLike || rt.likeRunning) return
     const cred = loadCred()
     if (!cred) return
+    const budget = likeBudget({ spent: likeSpentToday(), dailyMax: cfg.likeDailyMax, roundClicks: clicks })
+    if (budget.exhausted) {
+      log(`今日点赞总数已达上限（${budget.used}/${budget.max}），跳过点赞`)
+      return
+    }
+    store.ensureRoom(meta.realRoomId, { mid: meta.mid, name: meta.name })
     rt.likeRunning = true
     const tag = reason || meta.name || meta.realRoomId
     try {
@@ -579,7 +592,7 @@ export function apply(ctx) {
       const batch = Math.max(1, Math.min(15, Number(policy.data?.reportClickLimit) || 15))
       const gap = Math.max(5, Math.min(60, Number(policy.data?.reportTimeMin) || 5)) * 1000
       await enterRoom(cred, meta.realRoomId)
-      let left = Math.max(1, Math.min(3000, Number(clicks) || 300))
+      let left = Math.max(1, Math.min(3000, budget.clicks))
       let sent = 0
       while (left > 0) {
         if (Date.now() < rt.pausedUntil) { log('风控暂停中，停止本轮点赞'); break }
@@ -596,7 +609,7 @@ export function apply(ctx) {
         store.save()
         if (left > 0) await sleep(gap + jitter(300, 1500))
       }
-      if (sent) log(`点赞完成（${tag}）：本轮 ${sent} 次`)
+      if (sent) log(`点赞完成（${tag}）：本轮 ${sent} 次（今日 ${likeSpentToday()}/${budget.max}）`)
     } finally {
       rt.likeRunning = false
       rt.lastLikeAt = Date.now()
@@ -1142,7 +1155,7 @@ export function apply(ctx) {
         if (rt.watch && !rt.watch.running && !rt.watch.finished && now >= (rt.watch.nextRetryAt || 0)) startWatch(rt.main)
         await stepGreeting()
         await maybeAiDanmaku()
-        if (cfg.taskLike && now - rt.lastLikeAt >= cfg.likeRoundMs && !rt.likeRunning) {
+        if (cfg.taskLike && now - rt.lastLikeAt >= cfg.likeRoundMs && !rt.likeRunning && likeSpentToday() < cfg.likeDailyMax) {
           void runLikeRound(rt.main, { reason: '周期点赞' }).catch(() => {})
         }
       }
@@ -1200,6 +1213,7 @@ export function apply(ctx) {
           uname: String(cred?.uname || ''),
         },
         config: cfg,
+        like: { today: likeSpentToday(), max: cfg.likeDailyMax },
         streamers: tasks,
         mode: {
           auto: cfg.autoEnabled !== false,

@@ -42,9 +42,19 @@ const cred = { sessdata: 'mock', bili_jct: 'mock', buvid3: 'mock', dedeuserid: '
 writeFileSync(join(HOME, 'bili-duty', 'config.json'), JSON.stringify(config, null, 2))
 writeFileSync(join(HOME, 'bili-duty', 'credential.json'), JSON.stringify(cred, null, 2))
 
-// 贝拉预约：B站 卡片文案「明天 03:00 直播」解析出的绝对时刻（北京 2026-11-14 03:00 = UTC 11-13 19:00）
-const BJ_AT = '2026-11-13T19:00:00.000Z'
-const NAI_AT = '2026-11-14T19:00:00.000Z'
+// 用「明天/后天北京时间 03:00」动态生成夹具，避免写死日期随时间过期
+const NOW_MS = Date.now()
+function beijingAt(offsetDays, hh, mm) {
+  const bj = new Date(NOW_MS + 8 * 3600 * 1000)
+  return new Date(Date.UTC(bj.getUTCFullYear(), bj.getUTCMonth(), bj.getUTCDate() + offsetDays, hh - 8, mm, 0)).toISOString()
+}
+const BJ_AT = beijingAt(1, 3, 0) // 北京明天 03:00
+const NAI_AT = beijingAt(2, 3, 0) // 北京后天 03:00
+const bjLabel = (iso) => {
+  const d = new Date(Date.parse(iso) + 8 * 3600 * 1000)
+  const p2 = (n) => String(n).padStart(2, '0')
+  return `${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`
+}
 const BELLA_TITLE = '直播预约：【突击】战双·流光抛诸寰宇'
 const NAI_TITLE = '直播预约：【测试】乃琳专场'
 
@@ -141,9 +151,9 @@ const asserts = [
   ['导入日志记录补充标题', importLogLine.includes('补充标题 1 条')],
   ['/status plans 映射带 title', statusPlan?.title === NAI_TITLE],
   ['normalizePlans 保留标题并截断到 80 字', normalizedTitle === 'T'.repeat(80)],
-  ['导入日志带北京时间且含新增的乃琳 11-15 03:00', importLogLine.includes('北京时间') && importLogLine.includes('11-15 03:00')],
-  ['添加日志带北京时间', addLogLine.includes('北京时间') && addLogLine.includes('11-14 03:00')],
-  ['删除日志带北京时间', delLogLine.includes('北京时间') && delLogLine.includes('11-14 03:00')],
+  ['导入日志带北京时间且含新增的乃琳计划时间', importLogLine.includes('北京时间') && importLogLine.includes(bjLabel(NAI_AT))],
+  ['添加日志带北京时间', addLogLine.includes('北京时间') && addLogLine.includes(bjLabel(BJ_AT))],
+  ['删除日志带北京时间', delLogLine.includes('北京时间') && delLogLine.includes(bjLabel(BJ_AT))],
   ['删除后配置里不再有该计划', !savedAfterRemove.some((p) => p.at === BJ_AT)],
   ['client fmtPlanTime 使用浏览器本地时区（不再强制 +8）', fmtFn.includes('d.getHours()') && !fmtFn.includes('+ 8 * 3600 * 1000') && !fmtFn.includes('getUTCHours')],
   ['client 计划时间带「（本地时间）」后缀', fmtFn.includes('（本地时间）')],
